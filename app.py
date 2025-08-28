@@ -1,14 +1,14 @@
 """
-Servicio Flask para generar audios MP3 con Gemini y subirlos a GCS.
-Compatible con WhatsApp Business API (formato audio/mp3).
+Servicio Flask para generar audios MP3 con Gemini y subirlos a Google Cloud Storage.
+URL pública → compatible con WhatsApp Business API.
 """
 
 import os
 import asyncio
-import base64
 import logging
+from datetime import datetime
+from uuid import uuid4
 from io import BytesIO
-from typing import Optional
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -26,21 +26,30 @@ logger = logging.getLogger(__name__)
 # ===========================
 # Variables de Entorno
 # ===========================
-API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI")
-MODEL = "models/gemini-2.5-flash-exp-native-audio-thinking-dialog"
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise EnvironmentError("Falta GEMINI_API_KEY en variables de entorno")
+
+# Nombre del bucket en Google Cloud Storage
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+if not GCS_BUCKET_NAME:
+    raise EnvironmentError("Falta GCS_BUCKET_NAME en variables de entorno")
+
+# Puerto del servidor
 PORT = int(os.getenv("PORT", 5000))
 
-# Validar clave API
-if not API_KEY or "YOUR_API_KEY" in API_KEY:
-    raise ValueError("API Key de Gemini no configurada correctamente.")
-
-# Cliente Gemini (v1beta para audio nativo)
+# ===========================
+# Cliente Gemini (v1beta)
+# ===========================
 client = genai.Client(
     http_options=types.HttpOptions(api_version="v1beta"),
     api_key=API_KEY
 )
 
-# Configuración de audio: PCM → MP3
+# Modelo con audio nativo
+MODEL = "models/gemini-2.5-flash-exp-native-audio-thinking-dialog"
+
+# Configuración de audio: salida en PCM (LINEAR16)
 CONFIG = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
     speech_config=types.SpeechConfig(
@@ -48,7 +57,7 @@ CONFIG = types.LiveConnectConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
         ),
         output_audio_config=types.OutputAudioConfig(
-            audio_encoding="LINEAR16"  # LINEAR16 = PCM 16-bit
+            audio_encoding="LINEAR16"  # 16-bit PCM
         )
     )
 )
@@ -56,16 +65,19 @@ CONFIG = types.LiveConnectConfig(
 # ===========================
 # Google Cloud Storage
 # ===========================
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "gemini-audio-bucket")
+# Render cargará el archivo de credenciales como `service-account-key.json`
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service-account-key.json"
 
 def upload_to_gcs(mp3_data: bytes, filename: str) -> str:
-    """Sube archivo MP3 a Google Cloud Storage y devuelve URL pública."""
+    """
+    Sube audio MP3 a GCS y devuelve URL pública.
+    """
     try:
         client = storage.Client()
         bucket = client.bucket(GCS_BUCKET_NAME)
         blob = bucket.blob(filename)
         blob.upload_from_string(mp3_data, content_type="audio/mp3")
-        blob.make_public()  # Hacer público
+        blob.make_public()  # Hacer archivo público
         return blob.public_url
     except Exception as e:
         logger.error(f"Error al subir a GCS: {e}")
@@ -74,14 +86,16 @@ def upload_to_gcs(mp3_data: bytes, filename: str) -> str:
 # ===========================
 # Funciones de Audio
 # ===========================
-def pcm_to_mp3_buffer(pcm_data: bytes, frame_rate: int = 16000) -> Optional[BytesIO]:
-    """Convierte PCM raw a MP3."""
+def pcm_to_mp3_buffer(pcm_data: bytes) -> BytesIO:
+    """
+    Convierte PCM raw a MP3.
+    """
     try:
         audio = AudioSegment(
             data=pcm_data,
-            sample_width=2,
-            frame_rate=frame_rate,
-            channels=1
+            sample_width=2,      # 16-bit
+            frame_rate=16000,    # 16kHz
+            channels=1           # Mono
         )
         buffer = BytesIO()
         audio.export(buffer, format="mp3", bitrate="64k")
@@ -91,8 +105,10 @@ def pcm_to_mp3_buffer(pcm_data: bytes, frame_rate: int = 16000) -> Optional[Byte
         logger.error(f"Error en conversión PCM → MP3: {e}")
         return None
 
-async def generate_speech(text: str) -> Optional[bytes]:
-    """Genera audio PCM usando Gemini Live API."""
+async def generate_speech(text: str) -> bytes | None:
+    """
+    Genera audio PCM usando Gemini Live API.
+    """
     try:
         logger.info(f"Generando audio para: {text[:50]}...")
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
@@ -101,7 +117,6 @@ async def generate_speech(text: str) -> Optional[bytes]:
             async for response in session.receive():
                 if hasattr(response, 'data') and response.data:
                     chunks.append(response.data)
-                    logger.debug(f"Chunk recibido: {len(response.data)} bytes")
             return b''.join(chunks) if chunks else None
     except Exception as e:
         logger.error(f"Error en Gemini API: {e}")
@@ -115,7 +130,9 @@ CORS(app)
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """Recibe texto → genera audio MP3 → sube a GCS → devuelve URL pública."""
+    """
+    Recibe texto → genera audio MP3 → sube a GCS → devuelve URL pública.
+    """
     logger.info("=== NUEVA SOLICITUD DE AUDIO ===")
 
     try:
@@ -144,25 +161,29 @@ def chat():
         if not mp3_buffer:
             return jsonify({'error': 'Error al convertir audio'}), 500
 
+        mp3_data = mp3_buffer.read()
+
         # Nombre único del archivo
-        filename = f"{int(datetime.now().timestamp())}_{uuid.uuid4().hex}.mp3"
+        timestamp = int(datetime.now().timestamp())
+        filename = f"audio_{timestamp}_{uuid4().hex[:8]}.mp3"
 
         # Subir a GCS
-        audio_url = upload_to_gcs(mp3_buffer.read(), filename)
+        audio_url = upload_to_gcs(mp3_data, filename)
         if not audio_url:
-            return jsonify({'error': 'Error al subir audio a GCS'}), 500
+            return jsonify({'error': 'Error al subir audio a Google Cloud Storage'}), 500
 
         logger.info(f"Audio subido: {audio_url}")
 
-        # ✅ RESPUESTA PARA WHATSAPP
+        # ✅ Respuesta compatible con WhatsApp
         return jsonify({
             "audio_url": audio_url,
             "mimeType": "audio/mp3",
-            "size": len(mp3_buffer.getvalue())
+            "size": len(mp3_data),
+            "filename": filename
         })
 
     except Exception as e:
-        logger.exception("Error inesperado")
+        logger.exception("Error inesperado en /chat")
         return jsonify({'error': 'Error interno del servidor'}), 500
 
 
@@ -181,4 +202,5 @@ def health():
 # Inicio del Servidor
 # ===========================
 if __name__ == '__main__':
+    logger.info(f"🚀 Iniciando servidor en puerto {PORT}...")
     app.run(host='0.0.0.0', port=PORT, debug=False)
