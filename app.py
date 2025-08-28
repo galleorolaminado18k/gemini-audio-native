@@ -1,5 +1,5 @@
 """
-Servicio Flask para generar respuestas de voz en MP3 usando Gemini 2.5 Flash Exp.
+Servicio Flask para generar audios MP3 con Gemini y subirlos a GCS.
 Compatible con WhatsApp Business API (formato audio/mp3).
 """
 
@@ -15,15 +15,17 @@ from flask_cors import CORS
 from google import genai
 from google.genai import types
 from pydub import AudioSegment
+from google.cloud import storage
 
-# Configuración básica de logging
+# ===========================
+# Configuración de Logging
+# ===========================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ===========================
-# Configuración del Servicio
+# Variables de Entorno
 # ===========================
-
 API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI")
 MODEL = "models/gemini-2.5-flash-exp-native-audio-thinking-dialog"
 PORT = int(os.getenv("PORT", 5000))
@@ -38,7 +40,7 @@ client = genai.Client(
     api_key=API_KEY
 )
 
-# Configuración de salida de audio: PCM 16-bit, 16kHz, mono
+# Configuración de audio: PCM → MP3
 CONFIG = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
     speech_config=types.SpeechConfig(
@@ -46,91 +48,76 @@ CONFIG = types.LiveConnectConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
         ),
         output_audio_config=types.OutputAudioConfig(
-            audio_encoding="LINEAR16"  # Salida en PCM raw (16-bit, little-endian)
+            audio_encoding="LINEAR16"  # LINEAR16 = PCM 16-bit
         )
     )
 )
 
 # ===========================
+# Google Cloud Storage
+# ===========================
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "gemini-audio-bucket")
+
+def upload_to_gcs(mp3_data: bytes, filename: str) -> str:
+    """Sube archivo MP3 a Google Cloud Storage y devuelve URL pública."""
+    try:
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(filename)
+        blob.upload_from_string(mp3_data, content_type="audio/mp3")
+        blob.make_public()  # Hacer público
+        return blob.public_url
+    except Exception as e:
+        logger.error(f"Error al subir a GCS: {e}")
+        return ""
+
+# ===========================
 # Funciones de Audio
 # ===========================
-
-def pcm_to_mp3_buffer(pcm_data: bytes, frame_rate: int = 16000) -> Optional[bytes]:
-    """
-    Convierte audio PCM raw (16-bit, mono) a MP3.
-    
-    Args:
-        pcm_data: Datos de audio en formato PCM (raw bytes)
-        frame_rate: Frecuencia de muestreo (típicamente 16000 Hz)
-    
-    Returns:
-        bytes: Audio codificado en MP3, o None si falla.
-    """
+def pcm_to_mp3_buffer(pcm_data: bytes, frame_rate: int = 16000) -> Optional[BytesIO]:
+    """Convierte PCM raw a MP3."""
     try:
-        audio_segment = AudioSegment(
+        audio = AudioSegment(
             data=pcm_data,
-            sample_width=2,      # 16 bits = 2 bytes
+            sample_width=2,
             frame_rate=frame_rate,
-            channels=1           # Mono
+            channels=1
         )
-        
-        mp3_buffer = BytesIO()
-        audio_segment.export(mp3_buffer, format="mp3", bitrate="64k", parameters=["-ac", "1"])
-        return mp3_buffer.getvalue()
-    
+        buffer = BytesIO()
+        audio.export(buffer, format="mp3", bitrate="64k")
+        buffer.seek(0)
+        return buffer
     except Exception as e:
         logger.error(f"Error en conversión PCM → MP3: {e}")
         return None
 
-
 async def generate_speech(text: str) -> Optional[bytes]:
-    """
-    Genera audio de voz usando Gemini Live API.
-    
-    Args:
-        text: Texto a convertir en voz.
-    
-    Returns:
-        bytes: Audio PCM raw, o None si falla.
-    """
+    """Genera audio PCM usando Gemini Live API."""
     try:
         logger.info(f"Generando audio para: {text[:50]}...")
-        
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
             await session.send(input=text, end_of_turn=True)
-            
             chunks = []
             async for response in session.receive():
                 if hasattr(response, 'data') and response.data:
                     chunks.append(response.data)
                     logger.debug(f"Chunk recibido: {len(response.data)} bytes")
-            
-            if not chunks:
-                logger.warning("No se recibieron datos de audio.")
-                return None
-
-            return b''.join(chunks)
-    
+            return b''.join(chunks) if chunks else None
     except Exception as e:
-        logger.error(f"Error en Gemini Live API: {e}")
+        logger.error(f"Error en Gemini API: {e}")
         return None
-
 
 # ===========================
 # Servicio Flask
 # ===========================
-
 app = Flask(__name__)
-CORS(app)  # Permitir solicitudes desde frontend
+CORS(app)
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """
-    Endpoint principal:
-    Recibe texto → genera voz MP3 → devuelve Base64 para WhatsApp.
-    """
+    """Recibe texto → genera audio MP3 → sube a GCS → devuelve URL pública."""
     logger.info("=== NUEVA SOLICITUD DE AUDIO ===")
-    
+
     try:
         data = request.get_json()
         if not data:
@@ -142,55 +129,48 @@ def chat():
 
         logger.info(f"Texto recibido: '{user_text}'")
 
-        # Ejecutar en loop asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
         # Generar audio PCM
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         pcm_audio = loop.run_until_complete(generate_speech(user_text))
+        loop.close()
+
         if not pcm_audio:
-            logger.error("No se pudo generar audio con Gemini.")
+            logger.error("No se generó audio con Gemini.")
             return jsonify({'error': 'No se pudo generar el audio'}), 500
 
         # Convertir a MP3
-        mp3_audio = pcm_to_mp3_buffer(pcm_audio)
-        if not mp3_audio:
-            logger.error("Fallo en conversión a MP3.")
-            return jsonify({'error': 'Error interno al procesar audio'}), 500
+        mp3_buffer = pcm_to_mp3_buffer(pcm_audio)
+        if not mp3_buffer:
+            return jsonify({'error': 'Error al convertir audio'}), 500
 
-        # Codificar en Base64
-        audio_base64 = base64.b64encode(mp3_audio).decode('utf-8')
-        logger.info(f"Audio MP3 generado: {len(audio_base64)} caracteres (Base64)")
+        # Nombre único del archivo
+        filename = f"{int(datetime.now().timestamp())}_{uuid.uuid4().hex}.mp3"
 
-        # Respuesta compatible con WhatsApp
+        # Subir a GCS
+        audio_url = upload_to_gcs(mp3_buffer.read(), filename)
+        if not audio_url:
+            return jsonify({'error': 'Error al subir audio a GCS'}), 500
+
+        logger.info(f"Audio subido: {audio_url}")
+
+        # ✅ RESPUESTA PARA WHATSAPP
         return jsonify({
-            'candidates': [{
-                'content': {
-                    'role': 'model',
-                    'parts': [{
-                        'inlineData': {
-                            'mimeType': 'audio/mp3',
-                            'data': audio_base64
-                        }
-                    }]
-                }
-            }]
+            "audio_url": audio_url,
+            "mimeType": "audio/mp3",
+            "size": len(mp3_buffer.getvalue())
         })
 
     except Exception as e:
-        logger.exception("Error inesperado en /chat")
+        logger.exception("Error inesperado")
         return jsonify({'error': 'Error interno del servidor'}), 500
 
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Endpoint de salud del servicio."""
     return jsonify({
         'status': 'ok',
-        'service': 'Gemini Audio to WhatsApp',
+        'service': 'Gemini Audio para WhatsApp',
         'model': MODEL,
         'format': 'audio/mp3',
         'version': '1.0.0'
@@ -200,10 +180,5 @@ def health():
 # ===========================
 # Inicio del Servidor
 # ===========================
-
 if __name__ == '__main__':
-    logger.info(f"🚀 Iniciando servidor en puerto {PORT}...")
-    logger.info("✅ Asegúrate de tener 'ffmpeg' instalado en el sistema.")
-    logger.info("💡 Usa: pip install pydub y sudo apt install ffmpeg")
-    
     app.run(host='0.0.0.0', port=PORT, debug=False)
