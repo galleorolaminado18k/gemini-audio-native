@@ -1,5 +1,3 @@
-google-genai
 flask
 flask-cors
 gunicorn
-asyncio
