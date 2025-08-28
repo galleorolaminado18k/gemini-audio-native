@@ -86,7 +86,7 @@ def chat():
                         'role': 'model',
                         'parts': [{
                             'inlineData': {
-                                'mimeType': 'audio/mpeg',
+                                'mimeType': 'audio/wav',
                                 'data': audio_base64
                             }
                         }]
@@ -124,7 +124,7 @@ def health():
     return jsonify({
         'status': 'ok',
         'model': MODEL,
-        'version': 'gemini-native-audio'
+        'version': 'gemini-native-audio-wav'
     })
 
 if __name__ == '__main__':
