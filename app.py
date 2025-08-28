@@ -19,20 +19,24 @@ client = genai.Client(
     api_key=API_KEY
 )
 
-# Configuración para audio nativo
+# Configuración para audio nativo en formato PCM (compatible con WhatsApp)
 CONFIG = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
     speech_config=types.SpeechConfig(
         voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
+        ),
+        # Especificar formato de salida como PCM
+        output_audio_config=types.OutputAudioConfig(
+            audio_encoding="LINEAR16"  # Esto genera PCM raw
         )
     )
 )
 
 async def generate_native_audio(text):
-    """Genera audio nativo usando Gemini 2.5 Flash Exp"""
+    """Genera audio nativo en formato PCM usando Gemini Live API"""
     try:
-        print(f"Generando audio para: {text}")
+        print(f"Generando audio PCM para: {text}")
         
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
             await session.send(input=text, end_of_turn=True)
@@ -48,7 +52,7 @@ async def generate_native_audio(text):
             if audio_chunks:
                 full_audio = b''.join(audio_chunks)
                 audio_base64 = base64.b64encode(full_audio).decode('utf-8')
-                print(f"Audio completo generado: {len(audio_base64)} caracteres")
+                print(f"Audio PCM generado: {len(audio_base64)} caracteres")
                 return audio_base64
             
             return None
@@ -86,19 +90,19 @@ def chat():
                         'role': 'model',
                         'parts': [{
                             'inlineData': {
-                                'mimeType': 'audio/wav',
+                                'mimeType': 'audio/pcm',  # ← Crucial para WhatsApp
                                 'data': audio_base64
                             }
                         }]
                     }
                 }]
             }
-            print("=== AUDIO GEMINI GENERADO ===")
+            print("=== AUDIO PCM GENERADO PARA WHATSAPP ===")
             return jsonify(response)
         else:
             # Fallback a audio simulado si falla
             print("Usando fallback de audio simulado")
-            dummy_audio = b"RIFF fallback audio for: " + user_text.encode('utf-8')[:30]
+            dummy_audio = b"\x00\x00\x00\x00\x00\x00\x00\x00" + user_text.encode('utf-8')[:30]
             fallback_base64 = base64.b64encode(dummy_audio).decode('utf-8')
             
             return jsonify({
@@ -107,7 +111,7 @@ def chat():
                         'role': 'model',
                         'parts': [{
                             'inlineData': {
-                                'mimeType': 'audio/wav',
+                                'mimeType': 'audio/pcm',
                                 'data': fallback_base64
                             }
                         }]
@@ -124,10 +128,10 @@ def health():
     return jsonify({
         'status': 'ok',
         'model': MODEL,
-        'version': 'gemini-native-audio-wav'
+        'version': 'gemini-native-audio-pcm-whatsapp'
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"Iniciando con Gemini Native Audio en puerto {port}")
+    print(f"Iniciando con Gemini Native Audio (PCM) en puerto {port}")
     app.run(host='0.0.0.0', port=port)
