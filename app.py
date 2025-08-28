@@ -86,7 +86,7 @@ def chat():
                         'role': 'model',
                         'parts': [{
                             'inlineData': {
-                                'mimeType': 'audio/pcm',
+                                'mimeType': 'audio/mpeg',
                                 'data': audio_base64
                             }
                         }]
