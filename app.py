@@ -12,15 +12,16 @@ import pydub
 # Usa la variable de entorno GOOGLE_API_KEY
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 if not GOOGLE_API_KEY:
-    raise ValueError("No se encontró la variable de entorno GOOGLE_API_KEY.")
-
+    # Esto es crítico para que la app no falle al iniciar
+    print("WARNING: GOOGLE_API_KEY no encontrada. La app no funcionará correctamente sin esta clave.")
+    
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # Configuración de la aplicación Flask
 app = Flask(__name__)
 CORS(app)
 
-# Ruta principal (opcional, para verificar que la app esté viva)
+# Ruta principal para verificar el estado
 @app.route('/', methods=['GET'])
 def home():
     return "API Gemini Audio Bot está funcionando!", 200
@@ -37,7 +38,7 @@ def get_audio(filename):
     else:
         return jsonify({"error": "Archivo de audio no encontrado."}), 404
 
-# Ruta de chat asincrónica
+# Ruta principal de chat
 @app.route('/chat', methods=['POST'])
 async def chat():
     print("=== INICIO GEMINI AUDIO ===")
@@ -49,7 +50,7 @@ async def chat():
         user_text = data['text']
         print(f"Texto recibido: {user_text}")
 
-        # Configura la petición para la API de Gemini, solicitando audio
+        # Configura la petición para la API de Gemini
         generation_config = genai.types.GenerationConfig(
             response_modality="AUDIO",
             speech_config={
@@ -73,46 +74,34 @@ async def chat():
         if not response.candidates:
             return jsonify({"error": "No se encontraron candidatos en la respuesta de Gemini."}), 500
 
-        candidate = response.candidates[0]
-        if not candidate.content or not candidate.content.parts:
-            return jsonify({"error": "El contenido de la respuesta de Gemini está vacío."}), 500
-
-        audio_part = candidate.content.parts[0]
+        audio_part = response.candidates[0].content.parts[0]
         audio_data_base64 = audio_part.inline_data.data
 
-        # Convierte el audio de base64 a bytes PCM16
         audio_bytes = base64.b64decode(audio_data_base64)
         print(f"Bytes de audio PCM16 recibidos, longitud: {len(audio_bytes)}")
 
         try:
             pcm_audio = pydub.AudioSegment(
                 data=audio_bytes,
-                sample_width=2,  # 16-bit PCM
-                frame_rate=16000, # La API de Gemini TTS usa 16kHz
+                sample_width=2,
+                frame_rate=16000,
                 channels=1
             )
             print("Conversión a PCM exitosa.")
 
-            # Crea un nombre de archivo único para evitar conflictos
             filename = f"audio-{uuid.uuid4()}.mp3"
             temp_dir = 'temp_audio'
             os.makedirs(temp_dir, exist_ok=True)
             file_path = os.path.join(temp_dir, filename)
 
-            # Exporta el audio a un archivo MP3 temporal
             pcm_audio.export(file_path, format="mp3")
             print(f"Archivo MP3 guardado en: {file_path}")
             
             # Construye la URL pública
-            # Reemplaza <replit_username>-<project_name> con tu URL de Replit
-            base_url = os.getenv('REPLIT_URL')
-            if not base_url:
-                base_url = request.url_root
-            
+            base_url = request.host_url
             audio_url = f"{base_url}audio/{filename}"
             print(f"URL de audio generada: {audio_url}")
 
-            # Devuelve la URL en formato JSON
             return jsonify({
                 "audio_url": audio_url
             }), 200
