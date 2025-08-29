@@ -16,7 +16,7 @@ CORS(app)
 API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI")
 client = genai.Client(api_key=API_KEY)
 
-# --- Google Sheets (seguro: env var primero, archivo después)
+# --- Google Sheets (seguro: variable de entorno primero, archivo después)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SPREADSHEET_ID = "1GD_HKVDQLQgYX_XaOkyVpI9RBSAgkRNPVnWC3KaY5P0"
 
@@ -26,7 +26,7 @@ try:
     creds = None
     creds_json = os.getenv("GOOGLE_CREDENTIALS")
     if creds_json:
-        # credenciales desde variable de entorno (JSON completo)
+        # credenciales desde variable de entorno (JSON completo en string)
         info = json.loads(creds_json)
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     else:
@@ -54,7 +54,7 @@ def chat():
 
         print(f"Texto recibido: {user_text}")
 
-        # Generar texto con Gemini (sdk google-genai)
+        # Generar texto con Gemini
         response = client.models.generate_content(
             model="gemini-2.0-flash-001",
             contents=user_text
@@ -66,7 +66,7 @@ def chat():
         audio_data = b"AUDIO:" + generated_text.encode('utf-8')[:500]
         audio_base64 = base64.b64encode(audio_data).decode('utf-8')
 
-        # Guardar en Google Sheets (no romper si falla)
+        # Guardar en Google Sheets (sin romper si falla)
         if gs_ready and sheet is not None:
             try:
                 sheet.append_row([user_text, generated_text, audio_base64])
@@ -100,8 +100,6 @@ def health():
     }), 200
 
 if __name__ == '__main__':
-    # Cloud Run usa 8080
+    # Cloud Run necesita escuchar en 8080
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
-t)
-
