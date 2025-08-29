@@ -1,169 +1,149 @@
-import os
-import asyncio
-import base64
-import io
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from google import genai
-from google.genai import types
-from pydub import AudioSegment
+import React, { useState, useRef } from 'react';
 
-app = Flask(__name__)
-CORS(app)
+// Este es el componente principal de tu aplicación
+const App = () => {
+  const [text, setText] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [audioUrl, setAudioUrl] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const audioRef = useRef(null);
 
-# Tu API Key
-API_KEY = "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI"
+  // La URL de tu API de Flask en Replit
+  const API_URL = "https://gemini-audio-native.replit.dev/chat";
 
-# Usar el modelo de TTS que se recomienda
-MODEL = "gemini-2.5-flash-preview-tts"
+  // Esta función maneja el envío del formulario
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setIsSending(true);
+    setAudioUrl('');
+    setErrorMessage('');
 
-# Cliente con configuración beta
-client = genai.Client(
-    http_options=types.HttpOptions(api_version="v1beta"),
-    api_key=API_KEY
-)
+    try {
+      // Envía una petición POST a tu API
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text: text }),
+      });
 
-# La configuración de LiveConnect ya no se usa, pero la mantengo como referencia.
-CONFIG = types.LiveConnectConfig(
-    response_modalities=["AUDIO"],
-    speech_config=types.SpeechConfig(
-        voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
-        )
-    )
-)
+      // Si la respuesta no es exitosa, lanza un error
+      if (!response.ok) {
+        throw new Error(`Error en la respuesta de la API: ${response.statusText}`);
+      }
 
-async def generate_native_audio(text):
-    """
-    Genera audio usando la API de Gemini 2.5 Flash TTS y devuelve los datos PCM.
-    """
-    try:
-        print(f"Generando audio PCM para: {text}")
+      const data = await response.json();
+      
+      // Extrae el audio en base64 de la respuesta
+      const audioData = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      const mimeType = data.candidates?.[0]?.content?.[0]?.inlineData?.mimeType;
 
-        # Utilizar la API de generación de contenido para obtener el audio PCM
-        response = await client.aio.generate_content(
-            model=MODEL,
-            contents=[{'parts': [{'text': text}]}],
-            generation_config=types.GenerationConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
-                    )
-                )
-            )
-        )
+      if (audioData && mimeType) {
+        // Crea una URL de objeto para el audio
+        const audioBlob = base64toBlob(audioData, mimeType);
+        const url = URL.createObjectURL(audioBlob);
+        setAudioUrl(url);
+        if (audioRef.current) {
+          audioRef.current.play();
+        }
+      } else {
+        setErrorMessage('No se encontró audio en la respuesta de la API.');
+      }
+    } catch (error) {
+      console.error("Error al enviar la solicitud:", error);
+      setErrorMessage(`Ocurrió un error: ${error.message}`);
+    } finally {
+      setIsSending(false);
+    }
+  };
 
-        audio_part = response.candidates[0].content.parts[0]
-        if hasattr(audio_part, 'inline_data') and audio_part.inline_data:
-            full_audio_pcm = audio_part.inline_data.data
-            print(f"Audio PCM recibido: {len(full_audio_pcm)} bytes")
-            return full_audio_pcm
-        
-        return None
-        
-    except Exception as e:
-        print(f"Error en Gemini API: {e}")
-        return None
+  // Función para convertir base64 a Blob
+  const base64toBlob = (base64, mimeType) => {
+    const byteCharacters = atob(base64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    return new Blob([byteArray], { type: mimeType });
+  };
 
-def convert_pcm_to_mp3(pcm_data):
-    """
-    Convierte datos de audio PCM a formato MP3.
-    """
-    try:
-        # Convertir los datos de audio PCM a formato MP3 usando pydub
-        # La API de Gemini TTS devuelve PCM de 16-bit (L16) con un sample rate de 24000 Hz
-        audio_segment = AudioSegment.from_raw(
-            io.BytesIO(pcm_data),
-            sample_width=2, # 16-bit
-            frame_rate=24000,
-            channels=1
-        )
-        
-        # Exportar a un buffer de bytes en formato MP3
-        mp3_buffer = io.BytesIO()
-        audio_segment.export(mp3_buffer, format="mp3")
-        mp3_buffer.seek(0)
-        
-        audio_base64 = base64.b64encode(mp3_buffer.read()).decode('utf-8')
-        
-        print(f"Audio convertido a MP3: {len(audio_base64)} caracteres")
-        return audio_base64
-    except Exception as e:
-        print(f"Error en la conversión de PCM a MP3: {e}")
-        return None
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-4 font-sans">
+      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-xl p-8 space-y-6">
+        <header className="text-center">
+          <h1 className="text-4xl font-extrabold text-gray-800 tracking-tight">
+            <span className="bg-gradient-to-r from-blue-500 to-purple-600 text-transparent bg-clip-text">
+              Audio Bot
+            </span>
+          </h1>
+          <p className="mt-2 text-gray-600">
+            Ingresa un texto para convertirlo a audio usando Gemini AI.
+          </p>
+        </header>
 
-@app.route('/chat', methods=['POST'])
-async def chat():
-    """
-    Ruta de chat asincrónica.
-    """
-    print("=== INICIO GEMINI AUDIO ===")
-    try:
-        data = request.get_json()
-        user_text = data.get('text', '').strip()
-        
-        if not user_text:
-            return jsonify({'error': 'Campo text requerido'}), 400
-        
-        print(f"Texto recibido: {user_text}")
-        
-        # Generar audio con Gemini TTS API de forma asíncrona
-        audio_pcm = await generate_native_audio(user_text)
-        
-        if audio_pcm:
-            # Convertir el audio PCM a MP3
-            audio_base64 = convert_pcm_to_mp3(audio_pcm)
-
-            if audio_base64:
-                response = {
-                    'candidates': [{
-                        'content': {
-                            'role': 'model',
-                            'parts': [{
-                                'inlineData': {
-                                    'mimeType': 'audio/mpeg', # Tipo de MIME correcto para MP3
-                                    'data': audio_base64
-                                }
-                            }]
-                        }
-                    }]
-                }
-                print("=== AUDIO GEMINI GENERADO Y CONVERTIDO A MP3 ===")
-                return jsonify(response)
-
-        # Fallback a audio simulado si algo falla
-        print("Usando fallback de audio simulado")
-        dummy_audio = b"RIFF fallback audio for: " + user_text.encode('utf-8')[:30]
-        fallback_base64 = base64.b64encode(dummy_audio).decode('utf-8')
-        
-        return jsonify({
-            'candidates': [{
-                'content': {
-                    'role': 'model',
-                    'parts': [{
-                        'inlineData': {
-                            'mimeType': 'audio/mpeg',
-                            'data': fallback_base64
-                        }
-                    }]
-                }
-            }]
-        })
+        <main>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div className="relative">
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                className="w-full p-4 pl-12 pr-4 bg-gray-50 text-gray-700 rounded-xl border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-300 resize-none"
+                rows="4"
+                placeholder="Escribe tu mensaje aquí..."
+                disabled={isSending}
+              />
+              <div className="absolute top-4 left-4 text-gray-400">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-mic"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+              </div>
+            </div>
             
-    except Exception as e:
-        print(f"Error general: {e}")
-        return jsonify({'error': str(e)}), 500
+            <button
+              type="submit"
+              className="w-full py-3 px-4 flex items-center justify-center gap-2 rounded-xl text-white font-semibold transition-all duration-300 
+                         bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled={isSending}
+            >
+              {isSending ? (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-loader-2 animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  <span>Generando...</span>
+                </>
+              ) : (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-send-horizonal"><path d="m3 3 3 9-3 9 19-9Z"/><path d="M6 12h16"/></svg>
+                  <span>Generar Audio</span>
+                </>
+              )}
+            </button>
+          </form>
 
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({
-        'status': 'ok',
-        'model': MODEL,
-        'version': 'gemini-native-audio-mp3'
-    })
+          {errorMessage && (
+            <div className="mt-4 p-4 text-red-700 bg-red-100 rounded-xl border border-red-300">
+              <p className="font-medium">Error:</p>
+              <p>{errorMessage}</p>
+            </div>
+          )}
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print(f"Iniciando con Gemini Native Audio en puerto {port}")
-    app.run(host='0.0.0.0', port=port)
+          {audioUrl && (
+            <div className="mt-6 flex flex-col items-center gap-4 p-6 bg-blue-50 rounded-2xl border border-blue-200 shadow-inner">
+              <h2 className="text-xl font-bold text-blue-800 flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-volume-2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                <span>Audio Generado</span>
+              </h2>
+              <audio 
+                controls 
+                ref={audioRef}
+                src={audioUrl}
+                className="w-full"
+              />
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+};
+
+export default App;
