@@ -4,7 +4,7 @@ flask-cors==4.0.0
 gunicorn==21.2.0
 requests==2.31.0
 python-dotenv==1.0.1
-gspread==6.1.2
-google-auth==2.29.0
+gspread==6.1.4
+google-auth==2.35.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
