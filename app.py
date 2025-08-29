@@ -40,7 +40,7 @@ def chat():
                     'role': 'model',
                     'parts': [{
                         'inlineData': {
-                            'mimeType': 'audio/wav',
+                            'mimeType': 'audio/ogg',
                             'data': audio_base64
                         }
                     }]
