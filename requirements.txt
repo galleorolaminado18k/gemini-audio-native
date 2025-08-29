@@ -1,9 +1,5 @@
 flask
-
 Flask-Cors
-
 google-generativeai
-
 pydub
-
 gunicorn
