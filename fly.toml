@@ -1,4 +1,4 @@
-app = "gemini-audio-native"
+app = "gemini-live-api-oficial"
 primary_region = "bog"
 
 [build]
@@ -6,6 +6,8 @@ primary_region = "bog"
 [http_service]
   internal_port = 5000
   force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
 
 [env]
   PORT = "5000"
