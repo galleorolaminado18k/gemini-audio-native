@@ -9,9 +9,11 @@ from google.genai import types
 app = Flask(__name__)
 CORS(app)
 
-# Nueva API Key
+# Tu API Key
 API_KEY = "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI"
-MODEL = "models/gemini-2.5-flash-exp-native-audio-thinking-dialog"
+
+# Usar el modelo de TTS público y documentado
+MODEL = "gemini-2.5-flash-preview-tts"
 
 # Cliente con configuración beta
 client = genai.Client(
@@ -30,31 +32,35 @@ CONFIG = types.LiveConnectConfig(
 )
 
 async def generate_native_audio(text):
-    """Genera audio nativo usando Gemini 2.5 Flash Exp"""
+    """Genera audio nativo usando Gemini 2.5 Flash TTS"""
     try:
         print(f"Generando audio para: {text}")
+
+        # Utilizar la API de generación de contenido en lugar de Live API
+        response = await client.aio.generate_content(
+            model=MODEL,
+            contents=[{'parts': [{'text': text}]}],
+            generation_config=types.GenerationConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
+                    )
+                )
+            )
+        )
+
+        audio_part = response.candidates[0].content.parts[0]
+        if hasattr(audio_part, 'inline_data') and audio_part.inline_data:
+            full_audio = audio_part.inline_data.data
+            audio_base64 = base64.b64encode(full_audio).decode('utf-8')
+            print(f"Audio completo generado: {len(audio_base64)} caracteres")
+            return audio_base64
         
-        async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
-            await session.send(input=text, end_of_turn=True)
-            
-            audio_chunks = []
-            turn = session.receive()
-            
-            async for response in turn:
-                if hasattr(response, 'data') and response.data:
-                    audio_chunks.append(response.data)
-                    print(f"Chunk recibido: {len(response.data)} bytes")
-            
-            if audio_chunks:
-                full_audio = b''.join(audio_chunks)
-                audio_base64 = base64.b64encode(full_audio).decode('utf-8')
-                print(f"Audio completo generado: {len(audio_base64)} caracteres")
-                return audio_base64
-            
-            return None
-            
+        return None
+        
     except Exception as e:
-        print(f"Error en Live API: {e}")
+        print(f"Error en Gemini API: {e}")
         return None
 
 @app.route('/chat', methods=['POST'])
@@ -76,7 +82,7 @@ def chat():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        # Generar audio con Gemini Live API
+        # Generar audio con Gemini TTS API
         audio_base64 = loop.run_until_complete(generate_native_audio(user_text))
         
         if audio_base64:
@@ -86,7 +92,7 @@ def chat():
                         'role': 'model',
                         'parts': [{
                             'inlineData': {
-                                'mimeType': 'audio/mpeg',
+                                'mimeType': 'audio/pcm', # CORREGIDO: Usar audio/pcm
                                 'data': audio_base64
                             }
                         }]
@@ -107,7 +113,7 @@ def chat():
                         'role': 'model',
                         'parts': [{
                             'inlineData': {
-                                'mimeType': 'audio/mpeg',
+                                'mimeType': 'audio/pcm',
                                 'data': fallback_base64
                             }
                         }]
@@ -124,7 +130,7 @@ def health():
     return jsonify({
         'status': 'ok',
         'model': MODEL,
-        'version': 'gemini-native-audio-wav'
+        'version': 'gemini-native-audio-pcm'
     })
 
 if __name__ == '__main__':
