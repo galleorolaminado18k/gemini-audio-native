@@ -14,8 +14,8 @@ CORS(app)
 # Tu API Key
 API_KEY = "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI"
 
-# Usar el modelo de TTS que el usuario solicitó
-MODEL = "gemini-2.5-flash-exp-native-audio-thinking-dialog"
+# Usar el modelo de TTS que se recomienda
+MODEL = "gemini-2.5-flash-preview-tts"
 
 # Cliente con configuración beta
 client = genai.Client(
