@@ -25,49 +25,78 @@ CONFIG = {
 
 async def generate_native_audio_official(text_input):
     """
-    Genera audio nativo usando Live API siguiendo exactamente la documentación oficial
+    Genera audio nativo usando Live API con manejo robusto para Railway
     """
     try:
         print(f"Generando audio para: {text_input}")
         
-        # Establecer conexión Live API según documentación
-        async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
-            
-            # Enviar texto como entrada (según documentación oficial)
-            await session.send_realtime_input(
-                text=text_input
-            )
-            
-            # Recopilar respuesta de audio
-            audio_chunks = []
-            
-            # Recibir respuesta usando el patrón oficial
-            async for response in session.receive():
-                if response.data is not None:
-                    # Acumular datos de audio
-                    audio_chunks.append(response.data)
-                    print(f"Chunk de audio recibido: {len(response.data)} bytes")
-                
-                # Verificar si el turno está completo
-                if (response.server_content and 
-                    response.server_content.model_turn and 
-                    hasattr(response.server_content, 'turn_complete') and 
-                    response.server_content.turn_complete):
-                    break
-            
+        # Configuración con timeout más corto para Railway
+        import asyncio
+        
+        # Wrapper con timeout
+        async def connect_with_timeout():
+            try:
+                async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
+                    print("Conexión Live API establecida exitosamente")
+                    
+                    # Enviar texto como entrada
+                    await session.send_realtime_input(text=text_input)
+                    print("Texto enviado a Live API")
+                    
+                    # Recopilar respuesta de audio con timeout por chunk
+                    audio_chunks = []
+                    chunk_count = 0
+                    max_chunks = 50  # Límite de chunks para evitar bucles infinitos
+                    
+                    async for response in session.receive():
+                        chunk_count += 1
+                        print(f"Procesando chunk {chunk_count}")
+                        
+                        if response.data is not None:
+                            audio_chunks.append(response.data)
+                            print(f"Chunk de audio recibido: {len(response.data)} bytes")
+                        
+                        # Verificar múltiples condiciones de finalización
+                        if response.server_content:
+                            if hasattr(response.server_content, 'turn_complete'):
+                                if response.server_content.turn_complete:
+                                    print("Turno completo detectado")
+                                    break
+                            
+                            if response.server_content.model_turn:
+                                if hasattr(response.server_content.model_turn, 'parts'):
+                                    print("Partes del modelo detectadas")
+                        
+                        # Límite de seguridad
+                        if chunk_count >= max_chunks:
+                            print(f"Límite de chunks alcanzado: {max_chunks}")
+                            break
+                    
+                    print(f"Total de chunks de audio recolectados: {len(audio_chunks)}")
+                    return audio_chunks
+                    
+            except Exception as inner_e:
+                print(f"Error interno en conexión: {inner_e}")
+                return None
+        
+        # Ejecutar con timeout de 30 segundos
+        audio_chunks = await asyncio.wait_for(connect_with_timeout(), timeout=30.0)
+        
+        if audio_chunks:
             # Combinar todos los chunks de audio
-            if audio_chunks:
-                # Los chunks ya vienen como bytes, combinarlos
-                full_audio = b''.join(audio_chunks)
-                
-                # Convertir a base64 para la respuesta HTTP
-                audio_base64 = base64.b64encode(full_audio).decode('utf-8')
-                
-                print(f"Audio completo generado: {len(audio_base64)} caracteres base64")
-                return audio_base64
+            full_audio = b''.join(audio_chunks)
             
-            return None
+            # Convertir a base64 para la respuesta HTTP
+            audio_base64 = base64.b64encode(full_audio).decode('utf-8')
             
+            print(f"Audio completo generado: {len(audio_base64)} caracteres base64")
+            return audio_base64
+        
+        return None
+            
+    except asyncio.TimeoutError:
+        print("Timeout en Live API - conexión demasiado lenta")
+        return None
     except Exception as e:
         print(f"Error en Live API: {e}")
         print(f"Tipo de error: {type(e)}")
@@ -135,8 +164,8 @@ def health():
     return jsonify({
         'status': 'ok',
         'model': MODEL,
-        'version': 'live-api-oficial',
-        'sdk_version': '1.0.1'
+        'version': 'live-api-oficial-railway',
+        'sdk_version': '1.6.0'
     })
 
 @app.route('/test', methods=['GET'])
@@ -153,5 +182,6 @@ if __name__ == '__main__':
     print(f"=== INICIANDO GEMINI LIVE API SERVIDOR ===")
     print(f"Puerto: {port}")
     print(f"Modelo: {MODEL}")
-    print(f"SDK: google-genai 1.0.1")
+    print(f"SDK: google-genai 1.6.0")
+    print(f"Timeout configurado: 30 segundos")
     app.run(host='0.0.0.0', port=port, debug=False)
