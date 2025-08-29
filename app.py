@@ -4,12 +4,26 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 
+# --- 🔹 NUEVO: Librerías para Google Sheets
+import gspread
+from google.oauth2.service_account import Credentials
+
 app = Flask(__name__)
 CORS(app)
 
 # 👉 Usa la API_KEY fija (como la tienes) o si detecta variable de entorno la prioriza
 API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI")
 client = genai.Client(api_key=API_KEY)
+
+# --- 🔹 NUEVO: Configurar conexión con Google Sheets
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# ⚠️ Asegúrate de poner el nombre correcto del archivo de credenciales JSON
+creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPES)
+gc = gspread.authorize(creds)
+
+# ID de la hoja (sacado del link)
+SPREADSHEET_ID = "1GD_HKVDQLQgYX_XaOkyVpI9RBSAgkRNPVnWC3KaY5P0"
+sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -34,6 +48,9 @@ def chat():
         # Simular audio base64 con la respuesta
         audio_data = b"AUDIO:" + generated_text.encode('utf-8')[:500]
         audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+
+        # --- 🔹 NUEVO: Guardar en Google Sheets
+        sheet.append_row([user_text, generated_text, audio_base64])
         
         return jsonify({
             'candidates': [{
@@ -60,3 +77,4 @@ def health():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
