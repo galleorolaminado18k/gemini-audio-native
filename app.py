@@ -1,13 +1,12 @@
 """
-Servicio Flask para generar audios MP3 con Gemini y subirlos a Google Cloud Storage.
-URL pública → compatible con WhatsApp Business API.
+Servicio Flask para generar audio OGG con Gemini y convertirlo para WhatsApp.
+Compatible con WhatsApp Business API (mimeType: audio/ogg).
 """
 
 import os
 import asyncio
+import base64
 import logging
-from datetime import datetime
-from uuid import uuid4
 from io import BytesIO
 
 from flask import Flask, request, jsonify
@@ -15,39 +14,23 @@ from flask_cors import CORS
 from google import genai
 from google.genai import types
 from pydub import AudioSegment
-from google.cloud import storage
 
 # ===========================
-# Configuración de Logging
+# Configuración básica
 # ===========================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===========================
-# Variables de Entorno
-# ===========================
-API_KEY = os.getenv("GEMINI_API_KEY")
-if not API_KEY:
-    raise EnvironmentError("Falta GEMINI_API_KEY en variables de entorno")
-
-# Nombre del bucket en Google Cloud Storage
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
-if not GCS_BUCKET_NAME:
-    raise EnvironmentError("Falta GCS_BUCKET_NAME en variables de entorno")
-
-# Puerto del servidor
+# Tu API Key (directamente incluida)
+API_KEY = "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI"
+MODEL = "models/gemini-2.5-flash-exp-native-audio-thinking-dialog"
 PORT = int(os.getenv("PORT", 5000))
 
-# ===========================
-# Cliente Gemini (v1beta)
-# ===========================
+# Cliente Gemini (v1beta para audio nativo)
 client = genai.Client(
     http_options=types.HttpOptions(api_version="v1beta"),
     api_key=API_KEY
 )
-
-# Modelo con audio nativo
-MODEL = "models/gemini-2.5-flash-exp-native-audio-thinking-dialog"
 
 # Configuración de audio: salida en PCM (LINEAR16)
 CONFIG = types.LiveConnectConfig(
@@ -57,38 +40,17 @@ CONFIG = types.LiveConnectConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
         ),
         output_audio_config=types.OutputAudioConfig(
-            audio_encoding="LINEAR16"  # 16-bit PCM
+            audio_encoding="LINEAR16"  # PCM 16-bit
         )
     )
 )
 
 # ===========================
-# Google Cloud Storage
+# Función: Convertir PCM → OGG
 # ===========================
-# Render cargará el archivo de credenciales como `service-account-key.json`
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service-account-key.json"
-
-def upload_to_gcs(mp3_data: bytes, filename: str) -> str:
+def pcm_to_ogg(pcm_data: bytes) -> bytes | None:
     """
-    Sube audio MP3 a GCS y devuelve URL pública.
-    """
-    try:
-        client = storage.Client()
-        bucket = client.bucket(GCS_BUCKET_NAME)
-        blob = bucket.blob(filename)
-        blob.upload_from_string(mp3_data, content_type="audio/mp3")
-        blob.make_public()  # Hacer archivo público
-        return blob.public_url
-    except Exception as e:
-        logger.error(f"Error al subir a GCS: {e}")
-        return ""
-
-# ===========================
-# Funciones de Audio
-# ===========================
-def pcm_to_mp3_buffer(pcm_data: bytes) -> BytesIO:
-    """
-    Convierte PCM raw a MP3.
+    Convierte audio PCM raw a formato OGG (Opus), compatible con WhatsApp.
     """
     try:
         audio = AudioSegment(
@@ -97,14 +59,16 @@ def pcm_to_mp3_buffer(pcm_data: bytes) -> BytesIO:
             frame_rate=16000,    # 16kHz
             channels=1           # Mono
         )
-        buffer = BytesIO()
-        audio.export(buffer, format="mp3", bitrate="64k")
-        buffer.seek(0)
-        return buffer
+        ogg_buffer = BytesIO()
+        audio.export(ogg_buffer, format="ogg", codec="libopus")
+        return ogg_buffer.getvalue()
     except Exception as e:
-        logger.error(f"Error en conversión PCM → MP3: {e}")
+        logger.error(f"Error al convertir PCM → OGG: {e}")
         return None
 
+# ===========================
+# Generar audio con Gemini
+# ===========================
 async def generate_speech(text: str) -> bytes | None:
     """
     Genera audio PCM usando Gemini Live API.
@@ -117,6 +81,7 @@ async def generate_speech(text: str) -> bytes | None:
             async for response in session.receive():
                 if hasattr(response, 'data') and response.data:
                     chunks.append(response.data)
+                    logger.debug(f"Chunk recibido: {len(response.data)} bytes")
             return b''.join(chunks) if chunks else None
     except Exception as e:
         logger.error(f"Error en Gemini API: {e}")
@@ -126,12 +91,13 @@ async def generate_speech(text: str) -> bytes | None:
 # Servicio Flask
 # ===========================
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Permitir solicitudes desde frontend
 
 @app.route('/chat', methods=['POST'])
 def chat():
     """
-    Recibe texto → genera audio MP3 → sube a GCS → devuelve URL pública.
+    Recibe texto → genera audio → convierte a OGG → devuelve Base64.
+    Formato compatible con WhatsApp: audio/ogg
     """
     logger.info("=== NUEVA SOLICITUD DE AUDIO ===")
 
@@ -156,30 +122,28 @@ def chat():
             logger.error("No se generó audio con Gemini.")
             return jsonify({'error': 'No se pudo generar el audio'}), 500
 
-        # Convertir a MP3
-        mp3_buffer = pcm_to_mp3_buffer(pcm_audio)
-        if not mp3_buffer:
-            return jsonify({'error': 'Error al convertir audio'}), 500
+        # Convertir a OGG
+        ogg_audio = pcm_to_ogg(pcm_audio)
+        if not ogg_audio:
+            return jsonify({'error': 'Error al convertir a OGG'}), 500
 
-        mp3_data = mp3_buffer.read()
-
-        # Nombre único del archivo
-        timestamp = int(datetime.now().timestamp())
-        filename = f"audio_{timestamp}_{uuid4().hex[:8]}.mp3"
-
-        # Subir a GCS
-        audio_url = upload_to_gcs(mp3_data, filename)
-        if not audio_url:
-            return jsonify({'error': 'Error al subir audio a Google Cloud Storage'}), 500
-
-        logger.info(f"Audio subido: {audio_url}")
+        # Codificar en Base64
+        audio_base64 = base64.b64encode(ogg_audio).decode('utf-8')
+        logger.info(f"Audio OGG generado: {len(audio_base64)} caracteres")
 
         # ✅ Respuesta compatible con WhatsApp
         return jsonify({
-            "audio_url": audio_url,
-            "mimeType": "audio/mp3",
-            "size": len(mp3_data),
-            "filename": filename
+            'candidates': [{
+                'content': {
+                    'role': 'model',
+                    'parts': [{
+                        'inlineData': {
+                            'mimeType': 'audio/ogg',
+                            'data': audio_base64
+                        }
+                    }]
+                }
+            }]
         })
 
     except Exception as e:
@@ -189,11 +153,11 @@ def chat():
 
 @app.route('/health', methods=['GET'])
 def health():
+    """Endpoint de salud"""
     return jsonify({
         'status': 'ok',
         'service': 'Gemini Audio para WhatsApp',
-        'model': MODEL,
-        'format': 'audio/mp3',
+        'format': 'audio/ogg',
         'version': '1.0.0'
     })
 
@@ -203,4 +167,5 @@ def health():
 # ===========================
 if __name__ == '__main__':
     logger.info(f"🚀 Iniciando servidor en puerto {PORT}...")
+    logger.info("💡 Asegúrate de tener 'ffmpeg' instalado.")
     app.run(host='0.0.0.0', port=PORT, debug=False)
