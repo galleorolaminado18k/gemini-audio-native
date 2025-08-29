@@ -12,7 +12,7 @@ CORS(app)
 
 # Configuración según documentación oficial
 API_KEY = "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI"
-MODEL = "gemini-2.5-flash-preview-native-audio-dialog"  # Modelo correcto
+MODEL = "gemini-2.0-flash-live-001"  # Modelo correcto
 
 # Cliente con API key
 client = genai.Client(api_key=API_KEY)
