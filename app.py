@@ -7,7 +7,8 @@ from google import genai
 app = Flask(__name__)
 CORS(app)
 
-API_KEY = "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI"
+# 👉 Usa la API_KEY fija (como la tienes) o si detecta variable de entorno la prioriza
+API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI")
 client = genai.Client(api_key=API_KEY)
 
 @app.route('/chat', methods=['POST'])
