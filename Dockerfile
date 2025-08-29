@@ -14,8 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar aplicación
 COPY . .
 
-# Exponer puerto
-EXPOSE 5000
+# Exponer puerto dinámico asignado por Google Cloud Run
+EXPOSE $PORT
 
 # Comando para ejecutar
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "300", "app:app"]
+CMD exec gunicorn --bind :$PORT --workers 1 --timeout 300 app:app
