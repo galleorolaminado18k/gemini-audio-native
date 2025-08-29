@@ -35,7 +35,7 @@ CONFIG = types.LiveConnectConfig(
 
 async def generate_native_audio(text):
     """
-    Genera audio usando la API de Gemini 2.5 Flash TTS.
+    Genera audio usando la API de Gemini 2.5 Flash TTS y devuelve los datos PCM.
     """
     try:
         print(f"Generando audio PCM para: {text}")
@@ -94,7 +94,10 @@ def convert_pcm_to_mp3(pcm_data):
         return None
 
 @app.route('/chat', methods=['POST'])
-def chat():
+async def chat():
+    """
+    Ruta de chat asincrónica.
+    """
     print("=== INICIO GEMINI AUDIO ===")
     try:
         data = request.get_json()
@@ -105,15 +108,8 @@ def chat():
         
         print(f"Texto recibido: {user_text}")
         
-        # Crear event loop para async
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # Generar audio con Gemini TTS API
-        audio_pcm = loop.run_until_complete(generate_native_audio(user_text))
+        # Generar audio con Gemini TTS API de forma asíncrona
+        audio_pcm = await generate_native_audio(user_text)
         
         if audio_pcm:
             # Convertir el audio PCM a MP3
