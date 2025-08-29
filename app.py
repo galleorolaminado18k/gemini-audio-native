@@ -1,118 +1,157 @@
 import os
-import io
-import json
+import asyncio
 import base64
-import uuid
-from flask import Flask, request, jsonify, send_file
+import io
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-import google.generativeai as genai
-import pydub
+from google import genai
+from google.genai import types
 
-# Configuración de la API de Gemini
-# Usa la variable de entorno GOOGLE_API_KEY
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-if not GOOGLE_API_KEY:
-    # Esto es crítico para que la app no falle al iniciar
-    print("WARNING: GOOGLE_API_KEY no encontrada. La app no funcionará correctamente sin esta clave.")
-    
-genai.configure(api_key=GOOGLE_API_KEY)
-
-# Configuración de la aplicación Flask
 app = Flask(__name__)
 CORS(app)
 
-# Ruta principal para verificar el estado
-@app.route('/', methods=['GET'])
-def home():
-    return "API Gemini Audio Bot está funcionando!", 200
+# Configuración según documentación oficial
+API_KEY = "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI"
+MODEL = "gemini-2.5-flash-preview-native-audio-dialog"  # Modelo correcto
 
-# Ruta para servir los archivos de audio
-@app.route('/audio/<filename>', methods=['GET'])
-def get_audio(filename):
-    """
-    Sirve un archivo de audio temporal desde el directorio 'temp_audio'.
-    """
-    audio_path = os.path.join('temp_audio', filename)
-    if os.path.exists(audio_path):
-        return send_file(audio_path, mimetype='audio/mp3')
-    else:
-        return jsonify({"error": "Archivo de audio no encontrado."}), 404
+# Cliente con API key
+client = genai.Client(api_key=API_KEY)
 
-# Ruta principal de chat
-@app.route('/chat', methods=['POST'])
-async def chat():
-    print("=== INICIO GEMINI AUDIO ===")
+# Configuración Live API según documentación
+CONFIG = {
+    "response_modalities": ["AUDIO"],
+    "system_instruction": "Eres un asistente útil que responde de manera amigable y natural."
+}
+
+async def generate_native_audio_official(text_input):
+    """
+    Genera audio nativo usando Live API siguiendo exactamente la documentación oficial
+    """
     try:
-        data = request.json
-        if not data or 'text' not in data:
-            return jsonify({"error": "No se encontró el campo 'text' en la petición"}), 400
-
-        user_text = data['text']
-        print(f"Texto recibido: {user_text}")
-
-        # Configura la petición para la API de Gemini
-        generation_config = genai.types.GenerationConfig(
-            response_modality="AUDIO",
-            speech_config={
-                "voice_config": {
-                    "prebuilt_voice_config": {
-                        "voice_name": "Kore"
-                    }
-                }
-            }
-        )
+        print(f"Generando audio para: {text_input}")
         
-        # Llama a la API de Gemini
-        print("Llamando a la API de Gemini...")
-        response = await genai.generate_content_async(
-            user_text,
-            generation_config=generation_config,
-            model="gemini-2.5-flash-preview-tts"
-        )
-        print("Respuesta de Gemini recibida.")
-
-        if not response.candidates:
-            return jsonify({"error": "No se encontraron candidatos en la respuesta de Gemini."}), 500
-
-        audio_part = response.candidates[0].content.parts[0]
-        audio_data_base64 = audio_part.inline_data.data
-
-        audio_bytes = base64.b64decode(audio_data_base64)
-        print(f"Bytes de audio PCM16 recibidos, longitud: {len(audio_bytes)}")
-
-        try:
-            pcm_audio = pydub.AudioSegment(
-                data=audio_bytes,
-                sample_width=2,
-                frame_rate=16000,
-                channels=1
-            )
-            print("Conversión a PCM exitosa.")
-
-            filename = f"audio-{uuid.uuid4()}.mp3"
-            temp_dir = 'temp_audio'
-            os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, filename)
-
-            pcm_audio.export(file_path, format="mp3")
-            print(f"Archivo MP3 guardado en: {file_path}")
+        # Establecer conexión Live API según documentación
+        async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
             
-            # Construye la URL pública
-            base_url = request.host_url
-            audio_url = f"{base_url}audio/{filename}"
-            print(f"URL de audio generada: {audio_url}")
-
-            return jsonify({
-                "audio_url": audio_url
-            }), 200
-
-        except Exception as e:
-            print(f"Error en la conversión y guardado de audio: {e}")
-            return jsonify({"error": f"Error en el procesamiento de audio: {e}"}), 500
-
+            # Enviar texto como entrada (según documentación oficial)
+            await session.send_realtime_input(
+                text=text_input
+            )
+            
+            # Recopilar respuesta de audio
+            audio_chunks = []
+            
+            # Recibir respuesta usando el patrón oficial
+            async for response in session.receive():
+                if response.data is not None:
+                    # Acumular datos de audio
+                    audio_chunks.append(response.data)
+                    print(f"Chunk de audio recibido: {len(response.data)} bytes")
+                
+                # Verificar si el turno está completo
+                if (response.server_content and 
+                    response.server_content.model_turn and 
+                    hasattr(response.server_content, 'turn_complete') and 
+                    response.server_content.turn_complete):
+                    break
+            
+            # Combinar todos los chunks de audio
+            if audio_chunks:
+                # Los chunks ya vienen como bytes, combinarlos
+                full_audio = b''.join(audio_chunks)
+                
+                # Convertir a base64 para la respuesta HTTP
+                audio_base64 = base64.b64encode(full_audio).decode('utf-8')
+                
+                print(f"Audio completo generado: {len(audio_base64)} caracteres base64")
+                return audio_base64
+            
+            return None
+            
     except Exception as e:
-        print(f"Error general: {e}")
-        return jsonify({"error": "Error interno del servidor"}), 500
+        print(f"Error en Live API: {e}")
+        print(f"Tipo de error: {type(e)}")
+        return None
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    """Endpoint principal usando Live API oficial"""
+    print("=== INICIO GEMINI LIVE API OFICIAL ===")
+    
+    try:
+        # Obtener datos del request
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No se recibieron datos JSON'}), 400
+        
+        user_text = data.get('text', '').strip()
+        if not user_text:
+            return jsonify({'error': 'Campo text requerido y no puede estar vacío'}), 400
+        
+        print(f"Texto recibido: '{user_text}'")
+        
+        # Crear event loop para función async
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Generar audio usando Live API oficial
+        audio_base64 = loop.run_until_complete(generate_native_audio_official(user_text))
+        
+        if audio_base64:
+            # Respuesta en formato esperado por BuilderBot
+            response = {
+                'candidates': [{
+                    'content': {
+                        'role': 'model',
+                        'parts': [{
+                            'inlineData': {
+                                'mimeType': 'audio/pcm',  # Formato PCM como en documentación
+                                'data': audio_base64
+                            }
+                        }]
+                    }
+                }]
+            }
+            
+            print("=== AUDIO NATIVO GENERADO EXITOSAMENTE ===")
+            return jsonify(response)
+        
+        else:
+            # Respuesta de error si no se pudo generar audio
+            print("No se pudo generar audio con Live API")
+            return jsonify({'error': 'No se pudo generar el audio'}), 500
+    
+    except Exception as e:
+        print(f"Error en endpoint /chat: {e}")
+        print(f"Tipo de error: {type(e)}")
+        return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Endpoint de verificación de salud"""
+    return jsonify({
+        'status': 'ok',
+        'model': MODEL,
+        'version': 'live-api-oficial',
+        'sdk_version': '1.0.1'
+    })
+
+@app.route('/test', methods=['GET'])
+def test():
+    """Endpoint de prueba simple"""
+    return jsonify({
+        'message': 'Servidor funcionando correctamente',
+        'api_configured': bool(API_KEY),
+        'model': MODEL
+    })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    port = int(os.environ.get('PORT', 5000))
+    print(f"=== INICIANDO GEMINI LIVE API SERVIDOR ===")
+    print(f"Puerto: {port}")
+    print(f"Modelo: {MODEL}")
+    print(f"SDK: google-genai 1.0.1")
+    app.run(host='0.0.0.0', port=port, debug=False)
