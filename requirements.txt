@@ -1,5 +1,4 @@
-flask
-Flask-Cors
-google-generativeai
-pydub
-gunicorn
+flask==2.3.3
+flask-cors==4.0.0
+google-genai==0.8.0
+gunicorn==21.2.0
