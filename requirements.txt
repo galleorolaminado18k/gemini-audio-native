@@ -1,6 +1,5 @@
-google-genai
-flask
-flask-cors
-gunicorn
-asyncio
+Flask
+Flask-Cors
+google-generativeai
 pydub
+gunicorn
