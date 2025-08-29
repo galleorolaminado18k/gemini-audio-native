@@ -1,0 +1,16 @@
+app = "gemini-audio-native"
+primary_region = "bog"
+
+[build]
+
+[http_service]
+  internal_port = 5000
+  force_https = true
+
+[env]
+  PORT = "5000"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
