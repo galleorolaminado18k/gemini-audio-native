@@ -17,13 +17,14 @@ client = genai.Client(api_key=API_KEY)
 
 # --- 🔹 NUEVO: Configurar conexión con Google Sheets
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-# ⚠️ Asegúrate de poner el nombre correcto del archivo de credenciales JSON
+# ⚠️ Asegúrate de subir tu archivo JSON a tu repo (ejemplo: credenciales.json)
 creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPES)
 gc = gspread.authorize(creds)
 
-# ID de la hoja (sacado del link)
+# ID de la hoja (sacado del link de tu Google Sheet)
 SPREADSHEET_ID = "1GD_HKVDQLQgYX_XaOkyVpI9RBSAgkRNPVnWC3KaY5P0"
 sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
+
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -70,11 +71,12 @@ def chat():
         print(f"Error: {e}")
         return jsonify({'error': str(e)}), 500
 
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'version': 'no-live-api'})
 
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
