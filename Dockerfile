@@ -18,4 +18,4 @@ COPY . .
 EXPOSE $PORT
 
 # Comando para ejecutar
-CMD exec gunicorn --bind :$PORT --workers 1 --timeout 300 app:app
+CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 main:app
