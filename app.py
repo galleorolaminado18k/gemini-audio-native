@@ -1,10 +1,12 @@
 import os
 import asyncio
 import base64
+import io
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from google.genai import types
+from pydub import AudioSegment
 
 app = Flask(__name__)
 CORS(app)
@@ -21,7 +23,7 @@ client = genai.Client(
     api_key=API_KEY
 )
 
-# Configuración para audio nativo
+# La configuración de LiveConnect ya no se usa, pero la mantengo como referencia.
 CONFIG = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
     speech_config=types.SpeechConfig(
@@ -32,11 +34,13 @@ CONFIG = types.LiveConnectConfig(
 )
 
 async def generate_native_audio(text):
-    """Genera audio nativo usando Gemini 2.5 Flash TTS"""
+    """
+    Genera audio usando la API de Gemini 2.5 Flash TTS y lo convierte a MP3.
+    """
     try:
         print(f"Generando audio para: {text}")
 
-        # Utilizar la API de generación de contenido en lugar de Live API
+        # Utilizar la API de generación de contenido para obtener el audio PCM
         response = await client.aio.generate_content(
             model=MODEL,
             contents=[{'parts': [{'text': text}]}],
@@ -52,15 +56,31 @@ async def generate_native_audio(text):
 
         audio_part = response.candidates[0].content.parts[0]
         if hasattr(audio_part, 'inline_data') and audio_part.inline_data:
-            full_audio = audio_part.inline_data.data
-            audio_base64 = base64.b64encode(full_audio).decode('utf-8')
-            print(f"Audio completo generado: {len(audio_base64)} caracteres")
+            full_audio_pcm = audio_part.inline_data.data
+            
+            # Convertir los datos de audio PCM a formato MP3 usando pydub
+            # La API de Gemini TTS devuelve PCM de 16-bit (L16) con un sample rate de 24000 Hz
+            audio_segment = AudioSegment.from_raw(
+                io.BytesIO(full_audio_pcm),
+                sample_width=2, # 16-bit
+                frame_rate=24000,
+                channels=1
+            )
+            
+            # Exportar a un buffer de bytes en formato MP3
+            mp3_buffer = io.BytesIO()
+            audio_segment.export(mp3_buffer, format="mp3")
+            mp3_buffer.seek(0)
+            
+            audio_base64 = base64.b64encode(mp3_buffer.read()).decode('utf-8')
+            
+            print(f"Audio completo convertido a MP3: {len(audio_base64)} caracteres")
             return audio_base64
         
         return None
         
     except Exception as e:
-        print(f"Error en Gemini API: {e}")
+        print(f"Error en Gemini API o conversión: {e}")
         return None
 
 @app.route('/chat', methods=['POST'])
@@ -92,14 +112,14 @@ def chat():
                         'role': 'model',
                         'parts': [{
                             'inlineData': {
-                                'mimeType': 'audio/pcm', # CORREGIDO: Usar audio/pcm
+                                'mimeType': 'audio/mpeg', # CORREGIDO: Usar audio/mpeg para MP3
                                 'data': audio_base64
                             }
                         }]
                     }
                 }]
             }
-            print("=== AUDIO GEMINI GENERADO ===")
+            print("=== AUDIO GEMINI GENERADO Y CONVERTIDO A MP3 ===")
             return jsonify(response)
         else:
             # Fallback a audio simulado si falla
@@ -113,7 +133,7 @@ def chat():
                         'role': 'model',
                         'parts': [{
                             'inlineData': {
-                                'mimeType': 'audio/pcm',
+                                'mimeType': 'audio/mpeg', # Usar audio/mpeg para MP3
                                 'data': fallback_base64
                             }
                         }]
@@ -130,7 +150,7 @@ def health():
     return jsonify({
         'status': 'ok',
         'model': MODEL,
-        'version': 'gemini-native-audio-pcm'
+        'version': 'gemini-native-audio-mp3'
     })
 
 if __name__ == '__main__':
