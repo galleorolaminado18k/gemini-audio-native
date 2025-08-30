@@ -1,23 +1,28 @@
+# Imagen base ligera con Python 3.11
 FROM python:3.11-slim
 
+# Establecer directorio de trabajo
 WORKDIR /app
 
-# Dependencias del sistema (opcional; si no necesitas nada nativo, puedes omitir esta capa)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Instalar dependencias del sistema necesarias
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libffi-dev \
+    libnss3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Copiar dependencias
 COPY requirements.txt .
+
+# Instalar dependencias de Python
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el código
+# Copiar el código fuente
 COPY . .
 
-# Cloud Run fija el puerto por la var $PORT
+# Exponer puerto dinámico (Cloud Run asigna $PORT)
 EXPOSE $PORT
 
-# 👇 IMPORTANTE: apunta a app:app (archivo app.py → objeto app)
+# Comando de ejecución
 CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 main:app
-
-
