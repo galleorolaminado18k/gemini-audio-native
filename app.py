@@ -10,9 +10,6 @@ from google import genai  # sdk google-genai
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- NUEVO: Google Cloud Text-to-Speech
-from google.cloud import texttospeech
-
 app = Flask(__name__)
 CORS(app)
 
@@ -43,7 +40,7 @@ try:
     gs_ready = True
     print("✅ Google Sheets listo")
 except Exception as e:
-    print(f"⚠️ Google Sheets deshabilitado: {e}")
+    print(f"⚠ Google Sheets deshabilitado: {e}")
 
 # -----------------------------
 # Cache en memoria para audios
@@ -76,64 +73,45 @@ def chat():
 
         print(f"Texto recibido: {user_text}")
 
-        # 1. Generar respuesta con Gemini (nuevo modelo de audio nativo)
+        # 🔹 Generar texto + audio directamente con Gemini TTS
         response = client.models.generate_content(
-            model="gemini-2.5-flash-exp-native-audio-thinking-dialog",
-            contents=user_text
+            model="gemini-2.5-flash-preview-tts",
+            contents=user_text,
+            config={
+                "response_mime_type": "audio/ogg",  # formato de salida
+                "voice_config": {
+                    "language_code": "es-ES",  # español (cambia a "es-US" si quieres latino)
+                    "gender": "FEMALE"
+                }
+            }
         )
+
+        # Texto generado
         generated_text = getattr(response, "text", "") or ""
         print(f"Respuesta generada: {generated_text}")
 
-        # 2. Generar audio real con TTS (OGG Opus)
-        tts_client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=generated_text)
+        # Audio en base64 (devuelto por Gemini)
+        audio_base64 = response.candidates[0].content.parts[0].inline_data.data
+        audio_data = base64.b64decode(audio_base64)
 
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="es-ES",  # Español (puedes cambiar a "es-US")
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-        )
-
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.OGG_OPUS
-        )
-
-        response_tts = tts_client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config
-        )
-
-        audio_data = response_tts.audio_content
-        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-
-        # 3. Guardar fila en Google Sheets
+        # Guardar fila en Google Sheets
         if gs_ready and sheet is not None:
             try:
                 sheet.append_row([user_text, generated_text, audio_base64])
             except Exception as e_sheet:
-                print(f"⚠️ No se pudo escribir en Sheets: {e_sheet}")
+                print(f"⚠ No se pudo escribir en Sheets: {e_sheet}")
 
-        # 4. Guardar audio en caché para servirlo por URL
+        # Guardar audio en caché para servirlo por URL
         audio_id = str(uuid4())
         audio_cache[audio_id] = audio_data
         audio_url = f"{_public_base_url()}/audio/{audio_id}.ogg"
 
-        # 5. Respuesta JSON
+        # Respuesta JSON
         return jsonify({
             'text_response': generated_text,
             'audio_base64': audio_base64,
             'audio_url': audio_url,
-            'candidates': [{
-                'content': {
-                    'role': 'model',
-                    'parts': [{
-                        'inlineData': {
-                            'mimeType': 'audio/ogg',
-                            'data': audio_base64
-                        }
-                    }]
-                }
-            }]
+            'candidates': response.candidates
         }), 200
 
     except Exception as e:
@@ -160,7 +138,7 @@ def health():
     return jsonify({
         'status': 'ok',
         'sheets': 'ready' if gs_ready else 'disabled',
-        'version': 'tts-enabled'
+        'version': 'gemini-2.5-flash-preview-tts'
     }), 200
 
 
@@ -168,3 +146,4 @@ if __name__ == '__main__':
     # Cloud Run escucha en 8080
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
+
