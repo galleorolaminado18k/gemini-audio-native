@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
 from google import genai
-from google.genai import types  # para configuración de voz
+from google.genai import types  # para TTS config
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -40,6 +40,7 @@ try:
     gc = gspread.authorize(creds)
     sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
     gs_ready = True
+    print("✅ Google Sheets listo")
 except Exception as e:
     print("⚠ Google Sheets deshabilitado:", e)
 
@@ -53,7 +54,7 @@ def _public_base_url():
     return env.rstrip("/") if env else (request.host_url or "").rstrip("/")
 
 # -----------------------------
-# Endpoint principal
+# Endpoint principal /chat
 # -----------------------------
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -68,41 +69,51 @@ def chat():
 
         print(f"Texto recibido: {user_text}")
 
-        # 🔹 Generar AUDIO con Gemini TTS (no texto, solo audio)
-        response = client.models.generate_content(
+        # 1️⃣ Generar texto con Gemini Flash
+        response_text = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_text
+        )
+        generated_text = getattr(response_text, "text", "") or "(sin respuesta)"
+        print(f"Respuesta generada: {generated_text}")
+
+        # 2️⃣ Generar audio con Gemini TTS
+        response_audio = client.models.generate_content(
             model="gemini-2.5-flash-preview-tts",
-            contents=user_text,
+            contents=generated_text,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name="Kore"   # voz válida de la lista oficial
+                            voice_name="charon"  # puedes cambiar por "zephyr", "kore", etc.
                         )
                     )
                 )
             )
         )
 
-        # Obtener audio en base64
-        audio_base64 = response.candidates[0].content.parts[0].inline_data.data
+        # Extraer audio base64
+        audio_base64 = response_audio.candidates[0].content.parts[0].inline_data.data
         audio_bytes = base64.b64decode(audio_base64)
 
-        # Guardar fila en Google Sheets
+        # 3️⃣ Guardar en Google Sheets
         if gs_ready and sheet:
             try:
-                sheet.append_row([user_text, "(AUDIO)", audio_base64])
+                sheet.append_row([user_text, generated_text, f"{_public_base_url()}/audio/temp.ogg"])
             except Exception as e_sheet:
                 print("⚠ No se pudo guardar en Sheets:", e_sheet)
 
-        # Guardar en caché
+        # 4️⃣ Guardar en caché para URL pública
         audio_id = str(uuid4())
         audio_cache[audio_id] = audio_bytes
         audio_url = f"{_public_base_url()}/audio/{audio_id}.ogg"
 
+        # 5️⃣ Respuesta JSON para Builderbot / WhatsApp
         return jsonify({
-            "audio_base64": audio_base64,
-            "audio_url": audio_url
+            "reply": generated_text,
+            "audio_url": audio_url,
+            "audio_base64": audio_base64
         }), 200
 
     except Exception as e:
