@@ -1,9 +1,7 @@
 import os
-import json
 import base64
 from uuid import uuid4
 from io import BytesIO
-
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from google import genai  # sdk google-genai
@@ -14,7 +12,7 @@ app = Flask(__name__)
 CORS(app)
 
 # -----------------------------
-# Gemini API
+# Gemini API (usa tu API key)
 # -----------------------------
 API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyDf9n-nERTfTC3G4WRf7msqQP1gjZkZST0")
 client = genai.Client(api_key=API_KEY)
@@ -30,25 +28,23 @@ sheet = None
 try:
     creds_json = os.getenv("GOOGLE_CREDENTIALS")
     if creds_json:
+        import json
         info = json.loads(creds_json)
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     else:
         creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPES)
 
     gc = gspread.authorize(creds)
-    ss = gc.open_by_key(SPREADSHEET_ID)
-    sheet_title = os.getenv("SHEET_TITLE")
-    sheet = ss.worksheet(sheet_title) if sheet_title else ss.sheet1
+    sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
     gs_ready = True
     print("✅ Google Sheets listo")
 except Exception as e:
     print(f"⚠️ Google Sheets deshabilitado: {e}")
 
 # -----------------------------
-# Cache simple para servir audio por URL
+# Cache simple en memoria para audios
 # -----------------------------
-audio_cache = {}  # {audio_id: bytes}
-
+audio_cache = {}
 
 def _public_base_url() -> str:
     env_url = os.getenv("PUBLIC_BASE_URL")
@@ -56,10 +52,6 @@ def _public_base_url() -> str:
         return env_url.rstrip("/")
     return (request.host_url or "").rstrip("/")
 
-
-# -----------------------------
-# Endpoint principal: /chat
-# -----------------------------
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -73,63 +65,43 @@ def chat():
 
         print(f"Texto recibido: {user_text}")
 
-        # 🔹 Generar AUDIO directo con Gemini TTS
+        # 🔹 Generar respuesta en AUDIO con Gemini TTS
         response = client.models.generate_content(
             model="gemini-2.5-flash-preview-tts",
             contents=user_text,
             config={
-                "response_modalities": ["AUDIO"],
                 "speech_config": {
-                    "voice": "zephyr"   # 👈 voz permitida (puedes cambiarla por "umbriel", "pulcherrima", etc.)
+                    "voice_name": "charon"  # 👈 Usa una voz soportada (ej: charon, enceladus, kore, zephyr...)
                 }
             }
         )
 
-        # Extraer el audio en base64
+        # Extraer el audio de la respuesta
         audio_base64 = response.candidates[0].content.parts[0].inline_data.data
-        audio_data = base64.b64decode(audio_base64)
-
-        # Como Gemini TTS no devuelve texto, lo forzamos:
-        generated_text = f"Audio generado para: {user_text}"
+        audio_bytes = base64.b64decode(audio_base64)
 
         # Guardar en Google Sheets
         if gs_ready and sheet is not None:
             try:
-                sheet.append_row([user_text, generated_text, audio_base64])
+                sheet.append_row([user_text, "(AUDIO)", audio_base64])
             except Exception as e_sheet:
                 print(f"⚠️ No se pudo escribir en Sheets: {e_sheet}")
 
-        # Guardar audio en caché y construir URL pública
+        # Guardar en cache para servir por URL
         audio_id = str(uuid4())
-        audio_cache[audio_id] = audio_data
+        audio_cache[audio_id] = audio_bytes
         audio_url = f"{_public_base_url()}/audio/{audio_id}.ogg"
 
-        # Respuesta JSON
         return jsonify({
-            "text_response": generated_text,
+            "text_response": "(respuesta en audio)",
             "audio_base64": audio_base64,
-            "audio_url": audio_url,
-            "candidates": [{
-                "content": {
-                    "role": "model",
-                    "parts": [{
-                        "inlineData": {
-                            "mimeType": "audio/ogg",
-                            "data": audio_base64
-                        }
-                    }]
-                }
-            }]
+            "audio_url": audio_url
         }), 200
 
     except Exception as e:
         print(f"❌ Error en /chat: {e}")
         return jsonify({"error": str(e)}), 500
 
-
-# -----------------------------
-# Endpoint para servir audios
-# -----------------------------
 @app.route("/audio/<audio_id>.ogg", methods=["GET"])
 def get_audio(audio_id):
     data = audio_cache.get(audio_id)
@@ -137,10 +109,6 @@ def get_audio(audio_id):
         return "Audio expirado o no encontrado", 404
     return send_file(BytesIO(data), mimetype="audio/ogg", as_attachment=False, download_name=f"{audio_id}.ogg")
 
-
-# -----------------------------
-# Endpoint de health
-# -----------------------------
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
@@ -148,7 +116,6 @@ def health():
         "sheets": "ready" if gs_ready else "disabled",
         "version": "gemini-tts"
     }), 200
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
