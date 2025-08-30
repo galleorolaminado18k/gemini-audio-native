@@ -75,9 +75,9 @@ def chat():
 
         print(f"Texto recibido: {user_text}")
 
-        # Generar texto con Gemini
+        # 🔹 Generar respuesta con Gemini (nuevo modelo de audio nativo)
         response = client.models.generate_content(
-            model="gemini-2.0-flash-001",
+            model="gemini-2.5-flash-exp-native-audio-thinking-dialog",
             contents=user_text
         )
         generated_text = getattr(response, "text", "") or ""
@@ -160,4 +160,3 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
