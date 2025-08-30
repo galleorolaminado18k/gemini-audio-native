@@ -1,6 +1,8 @@
 import os
 import json
+import time
 import base64
+from collections import deque
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai  # sdk google-genai (ya está en tus requirements)
@@ -40,9 +42,52 @@ try:
 except Exception as e:
     print(f"⚠️ Google Sheets deshabilitado: {e}")
 
+# =========================
+# 🔹 Rate limiting local (simple por IP)
+# Permite N requests por ventana de T segundos por IP
+# =========================
+RATE_WINDOW_SECONDS = 10
+RATE_MAX_REQUESTS = 5
+_ip_hits = {}
+
+def is_rate_limited(ip: str) -> bool:
+    now = time.time()
+    q = _ip_hits.setdefault(ip, deque())
+    # Limpia timestamps fuera de ventana
+    while q and (now - q[0]) > RATE_WINDOW_SECONDS:
+        q.popleft()
+    if len(q) >= RATE_MAX_REQUESTS:
+        return True
+    q.append(now)
+    return False
+
+# =========================
+# 🔹 Helper: llamada a Gemini con reintentos (exponencial backoff)
+# =========================
+def generate_with_backoff(user_text: str, max_retries=3):
+    backoffs = [0.5, 1.0, 2.0]  # segundos
+    attempt = 0
+    while True:
+        try:
+            resp = client.models.generate_content(
+                model="gemini-2.0-flash-001",
+                contents=user_text
+            )
+            return resp
+        except Exception as e:
+            # Si parece error de cuota/velocidad, reintenta con backoff
+            msg = str(e).lower()
+            is_rate = ("rate" in msg) or ("quota" in msg) or ("429" in msg) or ("too many" in msg)
+            attempt += 1
+            if is_rate and attempt <= max_retries:
+                time.sleep(backoffs[min(attempt - 1, len(backoffs) - 1)])
+                continue
+            raise  # otros errores o agotados los reintentos
+
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
+        # Validar JSON
         if not request.is_json:
             return jsonify({'error': 'Content-Type debe ser application/json'}), 400
 
@@ -52,15 +97,36 @@ def chat():
         if not user_text:
             return jsonify({'error': 'Campo text requerido'}), 400
 
-        print(f"Texto recibido: {user_text}")
+        # Rate limit por IP
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+        if is_rate_limited(ip):
+            # Devuelve 429 con Retry-After sugerido
+            resp = jsonify({
+                'error': 'Too Many Requests',
+                'detail': f'Has superado {RATE_MAX_REQUESTS} solicitudes en {RATE_WINDOW_SECONDS}s. Intenta nuevamente en unos segundos.'
+            })
+            resp.status_code = 429
+            resp.headers['Retry-After'] = '5'
+            return resp
 
-        # Generar texto con Gemini
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-001",
-            contents=user_text
-        )
+        print(f"[{ip}] Texto recibido: {user_text}")
+
+        # Llamada a Gemini con reintentos
+        try:
+            response = generate_with_backoff(user_text)
+        except Exception as e_genai:
+            # Si aquí cayó por cuota (429), propagamos como 429
+            msg = str(e_genai).lower()
+            if ("rate" in msg) or ("quota" in msg) or ("429" in msg) or ("too many" in msg):
+                resp = jsonify({'error': 'Rate limit de Gemini', 'detail': str(e_genai)})
+                resp.status_code = 429
+                resp.headers['Retry-After'] = '5'
+                return resp
+            # Otros errores: 502 (upstream)
+            return jsonify({'error': 'Gemini upstream error', 'detail': str(e_genai)}), 502
+
         generated_text = getattr(response, "text", "") or ""
-        print(f"Respuesta generada: {generated_text}")
+        print(f"Respuesta generada: {generated_text[:200]}")
 
         # Simular audio base64 con la respuesta (tu lógica original)
         audio_data = b"AUDIO:" + generated_text.encode('utf-8')[:500]
@@ -103,3 +169,4 @@ if __name__ == '__main__':
     # Cloud Run necesita escuchar en 8080
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
+
