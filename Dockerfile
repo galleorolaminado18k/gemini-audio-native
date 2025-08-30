@@ -2,20 +2,20 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Instalar dependencias del sistema mínimas
+# Dependencias del sistema (opcional; si no necesitas nada nativo, puedes omitir esta capa)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar dependencias de Python
+# Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el código de la app
+# Copiar el código
 COPY . .
 
-# Cloud Run asigna el puerto en la variable $PORT
+# Cloud Run fija el puerto por la var $PORT
 EXPOSE $PORT
 
-# Arrancar el servidor con Gunicorn apuntando al objeto app en app.py
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 app:app
+# 👇 IMPORTANTE: apunta a app:app (archivo app.py → objeto app)
+CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 main:app
