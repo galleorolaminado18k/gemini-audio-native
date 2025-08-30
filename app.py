@@ -76,9 +76,9 @@ def chat():
 
         print(f"Texto recibido: {user_text}")
 
-        # 1. Generar respuesta con Gemini
+        # 1. Generar respuesta con Gemini (nuevo modelo de audio nativo)
         response = client.models.generate_content(
-            model="gemini-2.0-flash-001",
+            model="gemini-2.5-flash-exp-native-audio-thinking-dialog",
             contents=user_text
         )
         generated_text = getattr(response, "text", "") or ""
@@ -89,7 +89,7 @@ def chat():
         synthesis_input = texttospeech.SynthesisInput(text=generated_text)
 
         voice = texttospeech.VoiceSelectionParams(
-            language_code="es-ES",  # Español (cambiar a "es-US" si prefieres acento latino)
+            language_code="es-ES",  # Español (puedes cambiar a "es-US")
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
         )
 
@@ -168,4 +168,3 @@ if __name__ == '__main__':
     # Cloud Run escucha en 8080
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
-
