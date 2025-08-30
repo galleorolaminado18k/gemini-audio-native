@@ -36,14 +36,16 @@ try:
         creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPES)
 
     gc = gspread.authorize(creds)
-    sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
+    ss = gc.open_by_key(SPREADSHEET_ID)
+    sheet_title = os.getenv("SHEET_TITLE")
+    sheet = ss.worksheet(sheet_title) if sheet_title else ss.sheet1
     gs_ready = True
     print("✅ Google Sheets listo")
 except Exception as e:
-    print(f"⚠ Google Sheets deshabilitado: {e}")
+    print(f"⚠️ Google Sheets deshabilitado: {e}")
 
 # -----------------------------
-# Cache para audios
+# Cache simple para servir audio por URL
 # -----------------------------
 audio_cache = {}  # {audio_id: bytes}
 
@@ -55,6 +57,9 @@ def _public_base_url() -> str:
     return (request.host_url or "").rstrip("/")
 
 
+# -----------------------------
+# Endpoint principal: /chat
+# -----------------------------
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -63,52 +68,58 @@ def chat():
 
         data = request.get_json(silent=True) or {}
         user_text = (data.get("text") or "").strip()
-
         if not user_text:
             return jsonify({"error": "Campo text requerido"}), 400
 
         print(f"Texto recibido: {user_text}")
 
-        # 1. Generar texto con Gemini normal
-        text_response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_text
-        )
-        generated_text = getattr(text_response, "text", "") or ""
-        print(f"Respuesta generada: {generated_text}")
-
-        # 2. Generar audio con modelo TTS (solo devuelve AUDIO)
-        audio_response = client.models.generate_content(
+        # 🔹 Generar AUDIO directo con Gemini TTS
+        response = client.models.generate_content(
             model="gemini-2.5-flash-preview-tts",
-            contents=generated_text,
+            contents=user_text,
             config={
+                "response_modalities": ["AUDIO"],
                 "speech_config": {
-                    "voice": "es-US-Standard-A"  # ✅ en string, no dict
+                    "voice": "zephyr"   # 👈 voz permitida (puedes cambiarla por "umbriel", "pulcherrima", etc.)
                 }
             }
         )
 
-        # El audio llega en base64
-        audio_base64 = audio_response.candidates[0].content.parts[0].inline_data.data
+        # Extraer el audio en base64
+        audio_base64 = response.candidates[0].content.parts[0].inline_data.data
         audio_data = base64.b64decode(audio_base64)
 
-        # 3. Guardar fila en Google Sheets
+        # Como Gemini TTS no devuelve texto, lo forzamos:
+        generated_text = f"Audio generado para: {user_text}"
+
+        # Guardar en Google Sheets
         if gs_ready and sheet is not None:
             try:
                 sheet.append_row([user_text, generated_text, audio_base64])
             except Exception as e_sheet:
-                print(f"⚠ No se pudo escribir en Sheets: {e_sheet}")
+                print(f"⚠️ No se pudo escribir en Sheets: {e_sheet}")
 
-        # 4. Guardar audio en cache
+        # Guardar audio en caché y construir URL pública
         audio_id = str(uuid4())
         audio_cache[audio_id] = audio_data
         audio_url = f"{_public_base_url()}/audio/{audio_id}.ogg"
 
-        # 5. Respuesta JSON
+        # Respuesta JSON
         return jsonify({
             "text_response": generated_text,
             "audio_base64": audio_base64,
-            "audio_url": audio_url
+            "audio_url": audio_url,
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "inlineData": {
+                            "mimeType": "audio/ogg",
+                            "data": audio_base64
+                        }
+                    }]
+                }
+            }]
         }), 200
 
     except Exception as e:
@@ -116,6 +127,9 @@ def chat():
         return jsonify({"error": str(e)}), 500
 
 
+# -----------------------------
+# Endpoint para servir audios
+# -----------------------------
 @app.route("/audio/<audio_id>.ogg", methods=["GET"])
 def get_audio(audio_id):
     data = audio_cache.get(audio_id)
@@ -124,12 +138,15 @@ def get_audio(audio_id):
     return send_file(BytesIO(data), mimetype="audio/ogg", as_attachment=False, download_name=f"{audio_id}.ogg")
 
 
+# -----------------------------
+# Endpoint de health
+# -----------------------------
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
         "status": "ok",
         "sheets": "ready" if gs_ready else "disabled",
-        "version": "tts-gemini"
+        "version": "gemini-tts"
     }), 200
 
 
