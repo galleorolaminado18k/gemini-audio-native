@@ -6,7 +6,7 @@ from io import BytesIO
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-from google import genai  # SDK google-genai
+from google import genai
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -14,13 +14,13 @@ app = Flask(__name__)
 CORS(app)
 
 # -----------------------------
-# Gemini API (usa tu API key)
+# Gemini API
 # -----------------------------
 API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI")
 client = genai.Client(api_key=API_KEY)
 
 # -----------------------------
-# Google Sheets (seguro)
+# Google Sheets
 # -----------------------------
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SPREADSHEET_ID = "1GD_HKVDQLQgYX_XaOkyVpI9RBSAgkRNPVnWC3KaY5P0"
@@ -42,7 +42,7 @@ try:
     gs_ready = True
     print("✅ Google Sheets listo")
 except Exception as e:
-    print(f"⚠️ Google Sheets deshabilitado: {e}")
+    print(f"⚠ Google Sheets deshabilitado: {e}")
 
 # -----------------------------
 # Helper: base pública del servicio
@@ -63,46 +63,51 @@ audio_cache = {}  # {audio_id: bytes}
 def chat():
     try:
         if not request.is_json:
-            return jsonify({"error": "Content-Type debe ser application/json"}), 400
+            return jsonify({'error': 'Content-Type debe ser application/json'}), 400
 
         data = request.get_json(silent=True) or {}
         user_text = (data.get("text") or "").strip()
         if not user_text:
-            return jsonify({"error": "Campo text requerido"}), 400
+            return jsonify({'error': 'Campo text requerido'}), 400
 
         print(f"Texto recibido: {user_text}")
 
-        # 🔹 Generar texto + audio directamente con Gemini TTS
+        # 🔹 Generar texto + audio con Gemini TTS
         response = client.models.generate_content(
             model="gemini-2.5-flash-preview-tts",
-            contents=user_text,
-            config={
-                "response_mime_type": "audio/ogg",
-                "voice_config": {
-                    "language_code": "es-ES",  # español
-                    "gender": "FEMALE"         # voz femenina
-                }
-            }
+            contents=[{"role": "user", "parts": [{"text": user_text}]}]
         )
 
         # Texto generado
         generated_text = getattr(response, "text", "") or ""
         print(f"Respuesta generada: {generated_text}")
 
-        # Audio en base64 (directo del modelo)
-        audio_base64 = response.candidates[0].content.parts[0].inline_data.data
-        audio_data = base64.b64decode(audio_base64)
+        # Buscar audio dentro de la respuesta
+        audio_base64 = ""
+        try:
+            for c in response.candidates:
+                for part in c.content.parts:
+                    if hasattr(part, "inline_data") and part.inline_data.mime_type == "audio/ogg":
+                        audio_base64 = part.inline_data.data
+                        break
+        except Exception:
+            pass
+
+        if not audio_base64:
+            # Si no vino audio, lo simulamos vacío
+            audio_base64 = base64.b64encode(b"").decode("utf-8")
 
         # Guardar fila en Google Sheets
         if gs_ready and sheet is not None:
             try:
                 sheet.append_row([user_text, generated_text, audio_base64])
             except Exception as e_sheet:
-                print(f"⚠️ No se pudo escribir en Sheets: {e_sheet}")
+                print(f"⚠ No se pudo escribir en Sheets: {e_sheet}")
 
         # Guardar audio en cache y construir URL pública
+        audio_bytes = base64.b64decode(audio_base64)
         audio_id = str(uuid4())
-        audio_cache[audio_id] = audio_data
+        audio_cache[audio_id] = audio_bytes
         audio_url = f"{_public_base_url()}/audio/{audio_id}.ogg"
 
         # Respuesta JSON
@@ -110,7 +115,7 @@ def chat():
             "text_response": generated_text,
             "audio_base64": audio_base64,
             "audio_url": audio_url,
-            "candidates": response.candidates  # devolver también estructura completa
+            "candidates": [c.to_dict() for c in response.candidates]  # exportamos todo lo que da Gemini
         }), 200
 
     except Exception as e:
@@ -131,7 +136,7 @@ def health():
     return jsonify({
         "status": "ok",
         "sheets": "ready" if gs_ready else "disabled",
-        "version": "gemini-2.5-flash-preview-tts"
+        "version": "gemini-tts"
     }), 200
 
 
