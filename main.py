@@ -17,7 +17,7 @@ CORS(app)
 # -----------------------------
 # Configuración Gemini Live API
 # -----------------------------
-GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY", "TU_API_KEY_AQUI")
+GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY", ""AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI"")
 GEMINI_WS_URL = "wss://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-exp-native-audio-thinking-dialog:streamGenerateContent?key=" + GEMINI_API_KEY
 
 # -----------------------------
