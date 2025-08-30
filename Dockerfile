@@ -18,4 +18,4 @@ COPY . .
 EXPOSE $PORT
 
 # 👇 IMPORTANTE: apunta a app:app (archivo app.py → objeto app)
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 main:app
+CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 app:app
