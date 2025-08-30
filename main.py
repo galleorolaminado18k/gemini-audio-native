@@ -1,138 +1,86 @@
 import os
 import json
 import base64
+import asyncio
+import websockets
 from uuid import uuid4
 from io import BytesIO
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-from google import genai  # usa google-genai
-import gspread
-from google.oauth2.service_account import Credentials
-
-# --- NUEVO: Google Cloud TTS
-from google.cloud import texttospeech
 
 app = Flask(__name__)
 CORS(app)
 
 # -----------------------------
-# Gemini API (usa tu API key)
+# Configuración Gemini Live API
 # -----------------------------
-API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI")
-client = genai.Client(api_key=API_KEY)
+API_KEY = os.getenv("GOOGLE_API_KEY", "TU_API_KEY_AQUI")
+GEMINI_WS = "wss://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-exp-native-audio-thinking-dialog:generateContent?key=" + API_KEY
 
-# -----------------------------
-# Google Sheets (seguro)
-# -----------------------------
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SPREADSHEET_ID = "1GD_HKVDQLQgYX_XaOkyVpI9RBSAgkRNPVnWC3KaY5P0"
-
-gs_ready = False
-sheet = None
-try:
-    creds_json = os.getenv("GOOGLE_CREDENTIALS")
-    if creds_json:
-        info = json.loads(creds_json)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    else:
-        creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPES)
-
-    gc = gspread.authorize(creds)
-    ss = gc.open_by_key(SPREADSHEET_ID)
-    sheet_title = os.getenv("SHEET_TITLE")
-    sheet = ss.worksheet(sheet_title) if sheet_title else ss.sheet1
-    gs_ready = True
-    print("✅ Google Sheets listo")
-except Exception as e:
-    print(f"⚠️ Google Sheets deshabilitado: {e}")
-
-# -----------------------------
-# Helper: base pública del servicio
-# -----------------------------
-def _public_base_url() -> str:
-    env_url = os.getenv("PUBLIC_BASE_URL")
-    if env_url:
-        return env_url.rstrip("/")
-    return (request.host_url or "").rstrip("/")
-
-# -----------------------------
-# Cache simple para servir audio por URL
-# -----------------------------
+# Cache en memoria para audios
 audio_cache = {}  # {audio_id: bytes}
+
+
+async def get_audio_from_gemini(user_text: str) -> bytes:
+    """
+    Abre un WebSocket con Gemini Live API y recibe audio OGG generado por el modelo nativo
+    """
+    async with websockets.connect(GEMINI_WS, ping_interval=None) as ws:
+        # 1. Enviar prompt de usuario
+        await ws.send(json.dumps({
+            "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "audioConfig": {
+                    "audioEncoding": "AUDIO_ENCODING_OGG_OPUS"
+                }
+            }
+        }))
+
+        audio_chunks = []
+        # 2. Escuchar respuestas
+        async for message in ws:
+            msg = json.loads(message)
+
+            if "candidates" in msg:
+                for cand in msg["candidates"]:
+                    for part in cand["content"]["parts"]:
+                        if "inlineData" in part:
+                            data_b64 = part["inlineData"]["data"]
+                            audio_chunks.append(base64.b64decode(data_b64))
+
+            # fin de respuesta
+            if msg.get("serverContent") == "DONE":
+                break
+
+        return b"".join(audio_chunks)
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
-        if not request.is_json:
-            return jsonify({"error": "Content-Type debe ser application/json"}), 400
-
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(force=True)
         user_text = (data.get("text") or "").strip()
         if not user_text:
             return jsonify({"error": "Campo text requerido"}), 400
 
         print(f"Texto recibido: {user_text}")
 
-        # 🔹 Generar respuesta con Gemini (nuevo modelo de audio nativo)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-exp-native-audio-thinking-dialog",
-            contents=user_text
-        )
-        generated_text = getattr(response, "text", "") or ""
-        print(f"Respuesta generada: {generated_text}")
+        # Ejecutar el WebSocket en un bucle asyncio
+        audio_bytes = asyncio.run(get_audio_from_gemini(user_text))
 
-        # 🔹 Generar audio real con Google TTS (OGG Opus)
-        tts_client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=generated_text)
-
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="es-ES",  # español (puedes usar "es-US" para latino)
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-        )
-
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.OGG_OPUS  # salida en Opus
-        )
-
-        response_tts = tts_client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config
-        )
-
-        audio_data = response_tts.audio_content
-        audio_base64 = base64.b64encode(audio_data).decode("utf-8")
-
-        # Guardar fila en Google Sheets
-        if gs_ready and sheet is not None:
-            try:
-                sheet.append_row([user_text, generated_text, audio_base64])
-            except Exception as e_sheet:
-                print(f"⚠️ No se pudo escribir en Sheets: {e_sheet}")
-
-        # Guardar audio en cache y construir URL pública
+        # Guardar en cache y generar URL
         audio_id = str(uuid4())
-        audio_cache[audio_id] = audio_data
-        audio_url = f"{_public_base_url()}/audio/{audio_id}.ogg"
+        audio_cache[audio_id] = audio_bytes
+        audio_url = f"{request.host_url.rstrip('/')}/audio/{audio_id}.ogg"
 
-        # Respuesta JSON
+        audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
         return jsonify({
-            "text_response": generated_text,
-            "audio_base64": audio_base64,
             "audio_url": audio_url,
-            "candidates": [{
-                "content": {
-                    "role": "model",
-                    "parts": [{
-                        "inlineData": {
-                            "mimeType": "audio/ogg",
-                            "data": audio_base64
-                        }
-                    }]
-                }
-            }]
+            "audio_base64": audio_base64,
+            "text_response": f"[Gemini respondió con audio para: {user_text}]"
         }), 200
 
     except Exception as e:
@@ -150,11 +98,7 @@ def get_audio(audio_id):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({
-        "status": "ok",
-        "sheets": "ready" if gs_ready else "disabled",
-        "version": "tts-enabled"
-    }), 200
+    return jsonify({"status": "ok", "version": "gemini-audio-native"}), 200
 
 
 if __name__ == "__main__":
