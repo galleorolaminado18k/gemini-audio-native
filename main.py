@@ -16,7 +16,7 @@ CORS(app)
 # -----------------------------
 # Gemini API
 # -----------------------------
-API_KEY = os.getenv("GOOGLE_API_KEY", "TU_API_KEY_AQUI")
+API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC3895F5JKZSHKng1IVL_3DywImp4lwVyI")
 client = genai.Client(api_key=API_KEY)
 
 # -----------------------------
