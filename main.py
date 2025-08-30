@@ -6,10 +6,7 @@ from io import BytesIO
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-
-from google import genai
-from google.genai import types  # para TTS config
-
+from google import genai  # sdk google-genai
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -17,9 +14,9 @@ app = Flask(__name__)
 CORS(app)
 
 # -----------------------------
-# Gemini API con API KEY fija
+# Gemini API (usa tu API key)
 # -----------------------------
-API_KEY = "AIzaSyDf9n-nERTfTC3G4WRf7msqQP1gjZkZST0"
+API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyDf9n-nERTfTC3G4WRf7msqQP1gjZkZST0")
 client = genai.Client(api_key=API_KEY)
 
 # -----------------------------
@@ -37,25 +34,31 @@ try:
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     else:
         creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPES)
+
     gc = gspread.authorize(creds)
-    sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
+    ss = gc.open_by_key(SPREADSHEET_ID)
+    sheet_title = os.getenv("SHEET_TITLE")
+    sheet = ss.worksheet(sheet_title) if sheet_title else ss.sheet1
     gs_ready = True
     print("✅ Google Sheets listo")
 except Exception as e:
-    print("⚠ Google Sheets deshabilitado:", e)
+    print(f"⚠ Google Sheets deshabilitado: {e}")
 
 # -----------------------------
-# Cache de audios
+# Helper: base pública del servicio
 # -----------------------------
-audio_cache = {}
+def _public_base_url() -> str:
+    env_url = os.getenv("PUBLIC_BASE_URL")
+    if env_url:
+        return env_url.rstrip("/")
+    return (request.host_url or "").rstrip("/")
 
-def _public_base_url():
-    env = os.getenv("PUBLIC_BASE_URL")
-    return env.rstrip("/") if env else (request.host_url or "").rstrip("/")
+# -----------------------------
+# Cache simple para servir audio por URL
+# -----------------------------
+audio_cache = {}  # {audio_id: bytes}
 
-# -----------------------------
-# Endpoint principal /chat
-# -----------------------------
+
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -69,74 +72,72 @@ def chat():
 
         print(f"Texto recibido: {user_text}")
 
-        # 1️⃣ Generar texto con Gemini Flash
-        response_text = client.models.generate_content(
-            model="gemini-2.5-flash",
+        # Generar respuesta con Gemini (solo texto)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-001",
             contents=user_text
         )
-        generated_text = getattr(response_text, "text", "") or "(sin respuesta)"
+        generated_text = getattr(response, "text", "") or ""
         print(f"Respuesta generada: {generated_text}")
 
-        # 2️⃣ Generar audio con Gemini TTS
-        response_audio = client.models.generate_content(
-            model="gemini-2.5-flash-preview-tts",
-            contents=generated_text,
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name="charon"  # puedes cambiar por "zephyr", "kore", etc.
-                        )
-                    )
-                )
-            )
-        )
+        # Simulamos un audio binario a partir del texto
+        audio_data = b"AUDIO:" + generated_text.encode("utf-8")[:500]
 
-        # Extraer audio base64
-        audio_base64 = response_audio.candidates[0].content.parts[0].inline_data.data
-        audio_bytes = base64.b64decode(audio_base64)
+        # 🔹 Convertir los bytes a base64 (así evitamos el error de serialización)
+        audio_base64 = base64.b64encode(audio_data).decode("utf-8")
 
-        # 3️⃣ Guardar en Google Sheets
-        if gs_ready and sheet:
+        # Guardar en Google Sheets
+        if gs_ready and sheet is not None:
             try:
-                sheet.append_row([user_text, generated_text, f"{_public_base_url()}/audio/temp.ogg"])
+                sheet.append_row([user_text, generated_text, audio_base64])
             except Exception as e_sheet:
-                print("⚠ No se pudo guardar en Sheets:", e_sheet)
+                print(f"⚠ No se pudo escribir en Sheets: {e_sheet}")
 
-        # 4️⃣ Guardar en caché para URL pública
+        # Guardar audio en cache para servirlo por URL
         audio_id = str(uuid4())
-        audio_cache[audio_id] = audio_bytes
+        audio_cache[audio_id] = audio_data
         audio_url = f"{_public_base_url()}/audio/{audio_id}.ogg"
 
-        # 5️⃣ Respuesta JSON para Builderbot / WhatsApp
+        # Respuesta JSON (solo cadenas, nunca bytes)
         return jsonify({
-            "reply": generated_text,
+            "text_response": generated_text,
+            "audio_base64": audio_base64,
             "audio_url": audio_url,
-            "audio_base64": audio_base64
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "inlineData": {
+                            "mimeType": "audio/ogg",
+                            "data": audio_base64
+                        }
+                    }]
+                }
+            }]
         }), 200
 
     except Exception as e:
-        print("❌ Error en /chat:", e)
+        print(f"❌ Error en /chat: {e}")
         return jsonify({"error": str(e)}), 500
 
-# -----------------------------
-# Endpoint para servir audios
-# -----------------------------
-@app.route("/audio/<audio_id>.ogg")
+
+@app.route("/audio/<audio_id>.ogg", methods=["GET"])
 def get_audio(audio_id):
     data = audio_cache.get(audio_id)
     if not data:
         return "Audio expirado o no encontrado", 404
-    return send_file(BytesIO(data), mimetype="audio/ogg")
+    return send_file(BytesIO(data), mimetype="audio/ogg", as_attachment=False, download_name=f"{audio_id}.ogg")
 
-# -----------------------------
-# Health check
-# -----------------------------
-@app.route("/health")
+
+@app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "version": "gemini-tts"}), 200
+    return jsonify({
+        "status": "ok",
+        "sheets": "ready" if gs_ready else "disabled",
+        "version": "audio-base64"
+    }), 200
+
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
